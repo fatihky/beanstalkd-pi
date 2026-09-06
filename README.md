@@ -2,6 +2,25 @@
 
 A Go reimplementation of the beanstalkd work queue.
 
+## Testing
+
+- `beanstalkd_compat_test.go` — the beanstalkd compatibility suite. Every
+  test here (named `TestCompat_*`) drives the raw wire protocol and checks
+  responses against `beanstalkd/doc/protocol.txt`, the spec vendored via the
+  `beanstalkd` submodule. Run just this suite with:
+
+  ```sh
+  go test -run 'TestCompat_' .
+  ```
+
+- `compat_harness_test.go` — the shared test harness (`testClient`,
+  `dial`, `startTestServer`, ...) used to talk to a locally-started server
+  over a real TCP connection. It has no tests of its own.
+
+Features added on top of stock beanstalkd get their own test file(s) (and
+their own naming, not `TestCompat_`), reusing the harness above rather than
+being folded into the compatibility suite.
+
 ## Persistence
 
 beanstalkd-pi supports pluggable persistence backends via a port/adapter architecture.
