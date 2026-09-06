@@ -180,7 +180,7 @@ func (c *Conn) handlePut(args []string) {
 		return
 	}
 
-	if bodySize > maxJobSize {
+	if bodySize > c.Server.maxJobSize {
 		c.replyWord("JOB_TOO_BIG\r\n")
 		c.state = StateBitBucket
 		c.inJob = &Job{BodySize: bodySize}

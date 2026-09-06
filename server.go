@@ -16,11 +16,11 @@ import (
 )
 
 const (
-	safetyMargin = time.Second
-	maxJobSize   = 1 << 16 // 65536
-	maxLineLen   = 224
-	maxTubeName  = 200
-	version      = "beanstalkd-pi-1.0.0"
+	safetyMargin      = time.Second
+	defaultMaxJobSize = 1 << 16 // 65536
+	maxLineLen        = 224
+	maxTubeName       = 200
+	version           = "beanstalkd-pi-1.0.0"
 )
 
 type GlobalStats struct {
@@ -54,13 +54,14 @@ type GlobalStats struct {
 }
 
 type Server struct {
-	listener net.Listener
-	tubes    map[string]*Tube
-	conns    map[uint64]*Conn
-	jobIdx   *JobIndex
-	nextID   atomic.Uint64
-	connID   atomic.Uint64
-	persist  Persistence
+	listener   net.Listener
+	tubes      map[string]*Tube
+	conns      map[uint64]*Conn
+	jobIdx     *JobIndex
+	nextID     atomic.Uint64
+	connID     atomic.Uint64
+	persist    Persistence
+	maxJobSize int
 
 	mu sync.Mutex
 
@@ -109,6 +110,7 @@ func NewServer(addr string, persist Persistence) (*Server, error) {
 		conns:      make(map[uint64]*Conn),
 		jobIdx:     NewJobIndex(),
 		persist:    persist,
+		maxJobSize: defaultMaxJobSize,
 		startTime:  time.Now(),
 		instanceID: hex.EncodeToString(idBytes),
 		hostname:   hostname,
@@ -558,7 +560,7 @@ platform: %s
 		gs.CmdPauseTube,
 		gs.JobTimeouts,
 		gs.TotalJobs,
-		maxJobSize,
+		s.maxJobSize,
 		len(s.tubes),
 		s.currentConns,
 		s.producers,
