@@ -4,8 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
@@ -83,9 +83,21 @@ type Server struct {
 	osName     string
 	platform   string
 
+	// slowLogThreshold is the duration above which lock waits, lock
+	// holds, and reserve calls are logged as warnings. Defaults to
+	// defaultSlowLogThreshold; overridable via the -slow-log-threshold
+	// flag.
+	slowLogThreshold time.Duration
+
+	// adminServer is the observability HTTP server (/metrics,
+	// /healthz, /debug/pprof), if one was started. Guarded by mu.
+	adminServer *http.Server
+
 	closeCh chan struct{}
 	wg      sync.WaitGroup
 }
+
+const defaultSlowLogThreshold = 50 * time.Millisecond
 
 // NewServer creates a Server listening on addr, using persist as its
 // persistence backend. If persist is nil, persistence is a no-op.
@@ -105,18 +117,19 @@ func NewServer(addr string, persist Persistence) (*Server, error) {
 	}
 
 	s := &Server{
-		listener:   ln,
-		tubes:      make(map[string]*Tube),
-		conns:      make(map[uint64]*Conn),
-		jobIdx:     NewJobIndex(),
-		persist:    persist,
-		maxJobSize: defaultMaxJobSize,
-		startTime:  time.Now(),
-		instanceID: hex.EncodeToString(idBytes),
-		hostname:   hostname,
-		osName:     runtime.GOOS,
-		platform:   runtime.GOARCH,
-		closeCh:    make(chan struct{}),
+		listener:         ln,
+		tubes:            make(map[string]*Tube),
+		conns:            make(map[uint64]*Conn),
+		jobIdx:           NewJobIndex(),
+		persist:          persist,
+		maxJobSize:       defaultMaxJobSize,
+		startTime:        time.Now(),
+		instanceID:       hex.EncodeToString(idBytes),
+		hostname:         hostname,
+		osName:           runtime.GOOS,
+		platform:         runtime.GOARCH,
+		slowLogThreshold: defaultSlowLogThreshold,
+		closeCh:          make(chan struct{}),
 	}
 
 	s.nextID.Store(1)
@@ -148,13 +161,33 @@ func NewServer(addr string, persist Persistence) (*Server, error) {
 
 func (s *Server) persistJob(j *Job) {
 	if err := s.persist.StoreJob(ToPersistedJob(j)); err != nil {
-		log.Printf("persist store error: %v", err)
+		logger.Error("persist store error", "job", j.ID, "err", err)
 	}
 }
 
 func (s *Server) persistDelete(id uint64) {
 	if err := s.persist.DeleteJob(id); err != nil {
-		log.Printf("persist delete error: %v", err)
+		logger.Error("persist delete error", "job", id, "err", err)
+	}
+}
+
+// lockTraced acquires s.mu, logging a warning if the wait or the
+// resulting critical section exceeds s.slowLogThreshold. op names the
+// caller for the log line (e.g. "reserve", "tick"). The returned func
+// must be deferred to release the lock.
+func (s *Server) lockTraced(op string) func() {
+	waitStart := time.Now()
+	s.mu.Lock()
+	if waited := time.Since(waitStart); waited > s.slowLogThreshold {
+		logger.Warn("lock contention", "op", op, "waited", waited)
+	}
+
+	held := time.Now()
+	return func() {
+		s.mu.Unlock()
+		if d := time.Since(held); d > s.slowLogThreshold {
+			logger.Warn("slow critical section", "op", op, "held", d)
+		}
 	}
 }
 
@@ -176,13 +209,14 @@ func (s *Server) Run() {
 			switch sig {
 			case syscall.SIGUSR1:
 				s.drainMode.Store(true)
-				log.Println("drain mode activated")
+				logger.Info("drain mode activated")
 			case syscall.SIGINT, syscall.SIGTERM:
-				log.Println("shutting down...")
+				logger.Info("shutting down...")
 				close(s.closeCh)
 				s.listener.Close()
+				s.shutdownAdmin()
 				if err := s.persist.Close(); err != nil {
-					log.Printf("persistence close error: %v", err)
+					logger.Error("persistence close error", "err", err)
 				}
 				return
 			}
@@ -191,7 +225,7 @@ func (s *Server) Run() {
 
 	go s.tickLoop()
 
-	log.Printf("listening on %s", s.listener.Addr())
+	logger.Info("listening", "addr", s.listener.Addr().String())
 
 	for {
 		c, err := s.listener.Accept()
@@ -200,7 +234,7 @@ func (s *Server) Run() {
 			case <-s.closeCh:
 				return
 			default:
-				log.Printf("accept error: %v", err)
+				logger.Error("accept error", "err", err)
 				continue
 			}
 		}
@@ -271,8 +305,8 @@ func (s *Server) tickLoop() {
 }
 
 func (s *Server) tick(now time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	unlock := s.lockTraced("tick")
+	defer unlock()
 
 	for _, t := range s.tubes {
 		for t.Delay.Len() > 0 {

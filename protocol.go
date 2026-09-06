@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"log"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +17,7 @@ func (c *Conn) serve() {
 				if err == io.EOF {
 					return
 				}
-				log.Printf("conn %d read error: %v", c.ID, err)
+				logger.Debug("conn read error", "conn", c.ID, "err", err)
 				return
 			}
 			line = strings.TrimRight(line, "\r\n")
@@ -37,7 +36,7 @@ func (c *Conn) serve() {
 				if err == io.EOF || err == io.ErrUnexpectedEOF {
 					return
 				}
-				log.Printf("conn %d body read error: %v", c.ID, err)
+				logger.Debug("conn body read error", "conn", c.ID, "err", err)
 				return
 			}
 			copy(c.inJob.Body[c.inJobRead-n:], buf[:n])
@@ -321,10 +320,12 @@ func (c *Conn) handleReserveWithTimeout(args []string) {
 }
 
 func (c *Conn) doReserve(timeout time.Duration) {
-	now := time.Now()
+	start := time.Now()
+	now := start
 
-	c.Server.mu.Lock()
-	defer c.Server.mu.Unlock()
+	unlock := c.Server.lockTraced("reserve")
+	defer unlock()
+	defer c.traceReserve(start, "reserve")
 
 	if c.hasDeadlineSoon(now) && !c.hasReadyJobLocked() {
 		c.replyWord("DEADLINE_SOON\r\n")
@@ -351,8 +352,11 @@ func (c *Conn) doReserve(timeout time.Duration) {
 }
 
 func (c *Conn) doReserveImmediate() {
-	c.Server.mu.Lock()
-	defer c.Server.mu.Unlock()
+	start := time.Now()
+
+	unlock := c.Server.lockTraced("reserve-with-timeout-0")
+	defer unlock()
+	defer c.traceReserve(start, "reserve-with-timeout-0")
 
 	if j := c.Server.findJobForConn(c); j != nil {
 		c.sendReservedJob(j)
@@ -360,6 +364,19 @@ func (c *Conn) doReserveImmediate() {
 	}
 
 	c.replyWord("TIMED_OUT\r\n")
+}
+
+// traceReserve logs the time spent handling a reserve call: at debug
+// level always (request-level tracing), and as a warning when it
+// exceeds the server's slow-log threshold - a symptom of lock
+// contention or an oversized watch list.
+func (c *Conn) traceReserve(start time.Time, op string) {
+	elapsed := time.Since(start)
+	if elapsed > c.Server.slowLogThreshold {
+		logger.Warn("slow reserve", "op", op, "conn", c.ID, "elapsed", elapsed)
+	} else {
+		logger.Debug("reserve", "op", op, "conn", c.ID, "elapsed", elapsed)
+	}
 }
 
 func (c *Conn) hasReadyJobLocked() bool {

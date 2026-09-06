@@ -10,7 +10,7 @@ import (
 type ConnState int
 
 const (
-	StateWantCommand  ConnState = iota
+	StateWantCommand ConnState = iota
 	StateWantData
 	StateSendJob
 	StateSendWord
@@ -31,8 +31,8 @@ type Conn struct {
 	resHead Job
 
 	// Incoming job being read
-	inJob      *Job
-	inJobRead  int // bytes read so far of body+2
+	inJob     *Job
+	inJobRead int // bytes read so far of body+2
 
 	// Outgoing data
 	outBuf []byte
@@ -41,9 +41,9 @@ type Conn struct {
 	hasTimeout bool
 	timeoutAt  time.Time
 
-	state    ConnState
-	cmdBuf   []byte
-	reader   *bufio.Reader
+	state  ConnState
+	cmdBuf []byte
+	reader *bufio.Reader
 
 	halfClosed bool
 	isProducer bool

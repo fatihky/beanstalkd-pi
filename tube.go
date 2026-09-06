@@ -6,30 +6,30 @@ import (
 )
 
 type TubeStats struct {
-	UrgentCt     int64
-	ReadyCt      int64
-	ReservedCt   int64
-	DelayedCt    int64
-	BuriedCt     int64
-	TotalJobsCt  uint64
-	UsingCt      int64
-	WatchingCt   int64
-	WaitingCt    int64
-	PauseCt      uint64
-	DeleteCt     uint64
-	PauseTubeCt  uint64
+	UrgentCt    int64
+	ReadyCt     int64
+	ReservedCt  int64
+	DelayedCt   int64
+	BuriedCt    int64
+	TotalJobsCt uint64
+	UsingCt     int64
+	WatchingCt  int64
+	WaitingCt   int64
+	PauseCt     uint64
+	DeleteCt    uint64
+	PauseTubeCt uint64
 }
 
 type Tube struct {
-	Name      string
-	Ready     *Heap[*Job]
-	Delay     *Heap[*Job]
-	BuriedHead *Job // doubly-linked circular list sentinel
+	Name         string
+	Ready        *Heap[*Job]
+	Delay        *Heap[*Job]
+	BuriedHead   *Job // doubly-linked circular list sentinel
 	WaitingConns []*Conn
 
-	Stat       TubeStats
-	Pause      time.Duration
-	UnpauseAt  time.Time
+	Stat      TubeStats
+	Pause     time.Duration
+	UnpauseAt time.Time
 
 	mu sync.Mutex
 }

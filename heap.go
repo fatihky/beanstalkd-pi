@@ -2,8 +2,8 @@ package main
 
 // Heap is a generic min-heap with pluggable comparator and position callback.
 type Heap[T any] struct {
-	items []T
-	less  func(a, b T) bool
+	items  []T
+	less   func(a, b T) bool
 	setPos func(item T, idx int)
 }
 
