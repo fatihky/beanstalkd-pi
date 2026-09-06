@@ -242,6 +242,7 @@ func (c *Conn) finishPut() {
 	t.Stat.TotalJobsCt++
 	c.Server.jobIdx.Add(j)
 	c.Server.enqueueJob(j)
+	c.Server.persistJob(j)
 
 	c.replyWord(fmt.Sprintf("INSERTED %d\r\n", j.ID))
 }
@@ -517,6 +518,7 @@ func (c *Conn) handleRelease(args []string) {
 	j.ReleaseCt++
 
 	c.Server.enqueueJob(j)
+	c.Server.persistJob(j)
 	c.replyWord("RELEASED\r\n")
 }
 
@@ -560,6 +562,7 @@ func (c *Conn) handleBury(args []string) {
 	j.Tube.buryPush(j)
 	j.Tube.Stat.BuriedCt++
 	c.Server.buriedCt++
+	c.Server.persistJob(j)
 
 	c.replyWord("BURIED\r\n")
 }
@@ -770,6 +773,7 @@ func (c *Conn) handleKick(args []string) {
 			t.Stat.UrgentCt++
 			c.Server.globalUrgentCt++
 		}
+		c.Server.persistJob(j)
 		kicked++
 		j = next
 	}
@@ -789,6 +793,7 @@ func (c *Conn) handleKick(args []string) {
 				t.Stat.UrgentCt++
 				c.Server.globalUrgentCt++
 			}
+			c.Server.persistJob(j)
 			kicked++
 		}
 	}
@@ -846,6 +851,7 @@ func (c *Conn) handleKickJob(args []string) {
 		c.Server.globalUrgentCt++
 	}
 
+	c.Server.persistJob(j)
 	c.replyWord("KICKED\r\n")
 }
 

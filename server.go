@@ -60,6 +60,7 @@ type Server struct {
 	jobIdx   *JobIndex
 	nextID   atomic.Uint64
 	connID   atomic.Uint64
+	persist  Persistence
 
 	mu sync.Mutex
 
@@ -101,6 +102,7 @@ func NewServer(addr string) (*Server, error) {
 		tubes:      make(map[string]*Tube),
 		conns:      make(map[uint64]*Conn),
 		jobIdx:     NewJobIndex(),
+		persist:    &NoopPersistence{},
 		startTime:  time.Now(),
 		instanceID: hex.EncodeToString(idBytes),
 		hostname:   hostname,
@@ -112,7 +114,45 @@ func NewServer(addr string) (*Server, error) {
 	s.nextID.Store(1)
 	s.makeTube("default")
 
+	if err := s.persist.Init(); err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("persistence init: %w", err)
+	}
+
+	jobs, err := s.persist.LoadAllJobs()
+	if err != nil {
+		ln.Close()
+		return nil, fmt.Errorf("persistence load: %w", err)
+	}
+	for _, pj := range jobs {
+		j := fromPersistedJob(pj)
+		t := s.makeTube(j.Tube.Name)
+		j.Tube = t
+		s.jobIdx.Add(j)
+		if j.ID >= s.nextID.Load() {
+			s.nextID.Store(j.ID + 1)
+		}
+		s.enqueueJob(j)
+	}
+
 	return s, nil
+}
+
+// SetPersistence replaces the persistence backend. Must be called before Run().
+func (s *Server) SetPersistence(p Persistence) {
+	s.persist = p
+}
+
+func (s *Server) persistJob(j *Job) {
+	if err := s.persist.StoreJob(ToPersistedJob(j)); err != nil {
+		log.Printf("persist store error: %v", err)
+	}
+}
+
+func (s *Server) persistDelete(id uint64) {
+	if err := s.persist.DeleteJob(id); err != nil {
+		log.Printf("persist delete error: %v", err)
+	}
 }
 
 func (s *Server) makeTube(name string) *Tube {
@@ -138,6 +178,9 @@ func (s *Server) Run() {
 				log.Println("shutting down...")
 				close(s.closeCh)
 				s.listener.Close()
+				if err := s.persist.Close(); err != nil {
+					log.Printf("persistence close error: %v", err)
+				}
 				return
 			}
 		}
@@ -246,6 +289,7 @@ func (s *Server) tick(now time.Time) {
 				t.Stat.UrgentCt++
 				s.globalUrgentCt++
 			}
+			s.persistJob(j)
 		}
 
 		if t.Pause != 0 && !now.Before(t.UnpauseAt) {
@@ -394,6 +438,7 @@ func (s *Server) deleteJob(j *Job) bool {
 		j.Tube.Stat.DeleteCt++
 	}
 	s.jobIdx.Remove(j.ID)
+	s.persistDelete(j.ID)
 	j.State = StateInvalid
 	return true
 }
