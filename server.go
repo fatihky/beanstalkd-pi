@@ -86,7 +86,9 @@ type Server struct {
 	wg      sync.WaitGroup
 }
 
-func NewServer(addr string) (*Server, error) {
+// NewServer creates a Server listening on addr, using persist as its
+// persistence backend. If persist is nil, persistence is a no-op.
+func NewServer(addr string, persist Persistence) (*Server, error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
@@ -97,12 +99,16 @@ func NewServer(addr string) (*Server, error) {
 
 	hostname, _ := os.Hostname()
 
+	if persist == nil {
+		persist = &NoopPersistence{}
+	}
+
 	s := &Server{
 		listener:   ln,
 		tubes:      make(map[string]*Tube),
 		conns:      make(map[uint64]*Conn),
 		jobIdx:     NewJobIndex(),
-		persist:    &NoopPersistence{},
+		persist:    persist,
 		startTime:  time.Now(),
 		instanceID: hex.EncodeToString(idBytes),
 		hostname:   hostname,
@@ -136,11 +142,6 @@ func NewServer(addr string) (*Server, error) {
 	}
 
 	return s, nil
-}
-
-// SetPersistence replaces the persistence backend. Must be called before Run().
-func (s *Server) SetPersistence(p Persistence) {
-	s.persist = p
 }
 
 func (s *Server) persistJob(j *Job) {
