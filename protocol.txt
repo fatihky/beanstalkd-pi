@@ -18,7 +18,10 @@ original protocol.
 --------------------------------------------------------------------------
 
 All 25 commands from beanstalkd/doc/protocol.txt are implemented, with
-identical command lines, argument parsing, and reply formats:
+identical command lines, argument parsing, and reply formats, plus one
+extra command: ping, which replies "PONG" and increments cmd-ping. It is
+not part of stock beanstalkd's protocol; clients that send anything
+unknown get UNKNOWN_COMMAND, so this cannot collide with a stock command.
 
 Producer:      put, use
 Worker:        reserve, reserve-with-timeout, reserve-job, delete, release,

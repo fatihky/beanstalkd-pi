@@ -48,6 +48,7 @@ type GlobalStats struct {
 	CmdPauseTube          uint64
 	CmdReserveJob         uint64
 	CmdKickJob            uint64
+	CmdPing               uint64
 	JobTimeouts           uint64
 	TotalJobs             uint64
 	TotalConnections      uint64
@@ -564,6 +565,7 @@ cmd-list-tubes: %d
 cmd-list-tube-used: %d
 cmd-list-tubes-watched: %d
 cmd-pause-tube: %d
+cmd-ping: %d
 job-timeouts: %d
 total-jobs: %d
 max-job-size: %d
@@ -616,6 +618,7 @@ platform: %s
 		gs.CmdListTubeUsed,
 		gs.CmdListTubesWatched,
 		gs.CmdPauseTube,
+		gs.CmdPing,
 		gs.JobTimeouts,
 		gs.TotalJobs,
 		s.maxJobSize,

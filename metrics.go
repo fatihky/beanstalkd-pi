@@ -109,6 +109,7 @@ func cmdCounters(gs GlobalStats) []struct {
 		{"list_tube_used", gs.CmdListTubeUsed},
 		{"list_tubes_watched", gs.CmdListTubesWatched},
 		{"pause_tube", gs.CmdPauseTube},
+		{"ping", gs.CmdPing},
 	}
 }
 

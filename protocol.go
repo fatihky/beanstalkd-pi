@@ -144,6 +144,8 @@ func (c *Conn) dispatchCmd(line string) {
 	case "quit":
 		c.state = StateClose
 		return
+	case "ping":
+		c.handlePing()
 	default:
 		c.replyWord("UNKNOWN_COMMAND\r\n")
 	}
@@ -946,6 +948,14 @@ func (c *Conn) handleListTubes() {
 
 	yaml := c.Server.formatListTubes()
 	c.sendYAML(yaml)
+}
+
+func (c *Conn) handlePing() {
+	c.Server.mu.Lock()
+	c.Server.globalStats.CmdPing++
+	c.Server.mu.Unlock()
+
+	c.replyWord("PONG\r\n")
 }
 
 func (c *Conn) handleListTubeUsed() {
