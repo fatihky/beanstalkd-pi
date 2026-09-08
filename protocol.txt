@@ -1,0 +1,205 @@
+= beanstalkd-pi vs. stock beanstalkd =
+
+This document tracks how beanstalkd-pi (this repo) compares to stock
+beanstalkd (the C implementation, vendored read-only under beanstalkd/ as a
+git submodule, spec at beanstalkd/doc/protocol.txt). It covers the wire
+protocol (commands, replies, limits) and the architectural choices behind
+the server.
+
+The project's stated goal (see README.md and beanstalkd_compat_test.go) is
+wire-compatibility with stock beanstalkd: any beanstalkd client library
+should work against beanstalkd-pi unmodified. The differences below are
+either (a) deliberate simplifications of behavior that stock clients never
+observe, or (b) new operational surface that has no equivalent in the
+original protocol.
+
+--------------------------------------------------------------------------
+1. Commands
+--------------------------------------------------------------------------
+
+All 25 commands from beanstalkd/doc/protocol.txt are implemented, with
+identical command lines, argument parsing, and reply formats:
+
+Producer:      put, use
+Worker:        reserve, reserve-with-timeout, reserve-job, delete, release,
+               bury, touch, watch, ignore
+Other:         peek, peek-ready, peek-delayed, peek-buried, kick, kick-job,
+               stats-job, stats-tube, stats, list-tubes, list-tube-used,
+               list-tubes-watched, pause-tube, quit
+
+Behavior that matches stock beanstalkd exactly:
+
+ - Job lifecycle (ready/reserved/delayed/buried) and the state transitions
+   put, reserve, release, bury, kick, delete, touch, and TTR-expiry all
+   drive it exactly as pictured in protocol.txt.
+ - Job selection: lowest priority value first, ties broken by insertion
+   order (id), both within a tube and across a connection's watch list.
+ - reserve-with-timeout 0 semantics (immediate TIMED_OUT/RESERVED, no
+   blocking), and DEADLINE_SOON firing during the 1-second safety margin
+   before a reserved job's TTR expires.
+ - New connections start using and watching only "default".
+ - "ignore" refuses to remove the last tube in the watch list
+   (NOT_IGNORED), and kick prefers buried jobs over delayed jobs.
+ - Name/tube validation charset (letters, digits, "-+/;.$_()", no leading
+   "-"), the 224-byte command line cap, and the 200-byte tube name cap.
+ - stats/stats-tube/stats-job field sets and cumulative cmd-* counters
+   match protocol.txt's list field-for-field (see exceptions below).
+
+--------------------------------------------------------------------------
+2. Wire-protocol differences
+--------------------------------------------------------------------------
+
+ - No OUT_OF_MEMORY, no INTERNAL_ERROR, no "BURIED <id>" reply on put.
+   Stock beanstalkd can run out of memory growing its internal priority
+   queue and respond to "put" with BURIED instead of INSERTED, or reply
+   OUT_OF_MEMORY/INTERNAL_ERROR to any command. beanstalkd-pi's data
+   structures grow with the Go runtime's ordinary heap allocator, so a
+   client will never observe either reply; "put" only ever answers
+   INSERTED, JOB_TOO_BIG, DRAINING, or EXPECTED_CRLF. A real allocation
+   failure crashes the process (as Go's runtime does on OOM) rather than
+   being reported over the wire.
+
+ - Default max-job-size is 65536 bytes (bodySize > 65536 -> JOB_TOO_BIG),
+   one byte more than stock beanstalkd's 65535 (JOB_DATA_SIZE_LIMIT_DEFAULT
+   = (1<<16)-1). protocol.txt's prose ("default: 2**16") matches
+   beanstalkd-pi's number literally; the stock C server's actual default
+   is 2**16-1. There is no flag to change the limit at runtime (see below).
+
+ - Tubes are never deleted. protocol.txt: "If a tube is empty ... and no
+   client refers to it, it will be deleted." beanstalkd-pi creates tubes
+   on demand (via use/watch/put) but keeps every tube it has ever seen in
+   its tube map for the life of the process. list-tubes and current-tubes
+   will therefore report tubes long after every job and every
+   using/watching connection is gone. This is invisible to a client that
+   only inspects tubes it still cares about, but is observable via
+   list-tubes/stats-tube/current-tubes bookkeeping.
+
+ - stats' binlog-* fields (binlog-oldest-index, binlog-current-index,
+   binlog-max-size, binlog-records-written, binlog-records-migrated) are
+   hard-coded to 0. There is no binlog (see Persistence below), so these
+   exist only for client parsers that expect the keys to be present.
+
+ - stats-job's "file" field is hard-coded to 0 for the same reason.
+
+--------------------------------------------------------------------------
+3. Persistence: write-ahead log vs. pluggable adapter
+--------------------------------------------------------------------------
+
+Stock beanstalkd persists via an append-only binary write-ahead log (the
+"binlog", enabled with -b DIR): every state-changing operation on a job is
+appended as a fixed-format record, log files are rotated at -s BYTES, and
+old files are reclaimed once none of their jobs are still live
+("compaction"). Recovery replays the binlog forward.
+
+beanstalkd-pi replaces this with a Persistence port/adapter interface
+(persistence.go) with pluggable backends:
+
+ - NoopPersistence (default): discards all writes; no durability at all,
+   equivalent to running stock beanstalkd without -b.
+ - SQLitePersistence (-db path): a table of whole jobs keyed by id,
+   upserted/deleted per lifecycle event, tuned for flash storage (WAL
+   journal mode, batched transactions flushed every 1000 ops or 5s,
+   single-writer connection). See README.md "Persistence" for the full
+   write-up.
+
+Practical consequences of this design vs. stock's binlog:
+
+ - Durability window: stock beanstalkd fsyncs on a configurable interval
+   (-f MS, default 50ms) or on every write (-f0), or never (-F).
+   beanstalkd-pi's SQLite adapter batches up to 5 seconds or 1000 ops
+   before a transaction commit — a wider default durability gap than
+   stock's default, with no flag to tighten it short of calling Sync()
+   from custom code.
+ - Storage shape: the binlog stores an event log and replays it; the
+   SQLite adapter stores current job state directly (last-write-wins per
+   job id), so there's no replay/compaction step and no binlog file
+   rotation.
+ - Custom backends: stock beanstalkd's persistence is not extensible
+   short of forking the C server. beanstalkd-pi's Persistence interface
+   lets a caller of NewServer supply any backend implementing
+   Init/Close/StoreJob/DeleteJob/LoadAllJobs/Sync.
+
+--------------------------------------------------------------------------
+4. Concurrency model
+--------------------------------------------------------------------------
+
+Stock beanstalkd is a single-threaded, libevent-driven reactor: one event
+loop multiplexes all connections and there is no locking because there is
+no concurrency.
+
+beanstalkd-pi is a goroutine-per-connection Go server: each accepted
+connection runs its own goroutine (server.go: handleConn), and all shared
+state (tubes, job index, global stats, waiting connections) is guarded by
+a single Server.mu mutex taken for the duration of each command. A
+separate goroutine (tickLoop, 100ms period) sweeps for delayed-job
+promotion, TTR expiry, and reserve timeouts/DEADLINE_SOON — the equivalent
+of stock's event-driven timer callbacks, but polling-based instead of
+timer-heap-driven. Lock-hold and lock-wait times above a configurable
+threshold (-slow-log-threshold, default 50ms) are logged as warnings
+(server.go: lockTraced), which has no equivalent in stock beanstalkd.
+
+--------------------------------------------------------------------------
+5. Process lifecycle / signals
+--------------------------------------------------------------------------
+
+ - SIGUSR1 (drain mode): identical semantics in both — stops accepting new
+   "put"s (DRAINING reply), everything else continues to work.
+ - SIGINT/SIGTERM: stock beanstalkd does not install handlers for these
+   except a PID-1-only SIGTERM workaround for Docker (exits immediately,
+   no explicit flush step needed since the binlog is durable on write).
+   beanstalkd-pi installs real handlers for both signals unconditionally
+   and performs an explicit graceful shutdown: stop accepting connections,
+   shut down the observability HTTP server, and close the persistence
+   backend (for SQLitePersistence this runs a final WAL checkpoint).
+ - SIGPIPE: stock beanstalkd explicitly ignores it (a C-specific concern
+   for writes to closed sockets). Not applicable/needed in Go, whose net
+   package returns a normal error instead of raising SIGPIPE.
+
+--------------------------------------------------------------------------
+6. CLI flags
+--------------------------------------------------------------------------
+
+  stock beanstalkd          beanstalkd-pi              notes
+  ------------------------  --------------------------  ----------------------------------------
+  -l ADDR / -p PORT         -addr ":11300"               combined into one host:port flag
+  -z BYTES                  (none)                       max job size is fixed at 65536, no flag
+  -b DIR                    -db PATH                     binlog dir -> SQLite file path; omitting
+                                                           either disables persistence
+  -s BYTES                  (none)                       no binlog file rotation to size
+  -f MS / -F                (none)                       no fsync-interval knob; SQLite adapter's
+                                                           batching window is fixed in code
+  -u USER                   (none)                       no privilege-drop; run under the desired
+                                                           user via the OS/service manager instead
+  -c / -n                   (none)                        removed upstream too (binlog is always
+                                                           compacted); not applicable here (no binlog)
+  -v / -V / -h               (none, use -h via flag pkg)  Go's flag package provides -h; no -v/-V
+  (none)                    -http-addr ":11301"          observability HTTP server, see below
+  (none)                    -pprof                        expose net/http/pprof on that server
+  (none)                    -log-level / -log-format      structured logging (log/slog), text|json
+  (none)                    -slow-log-threshold            warn on slow locks/reserves (see above)
+
+--------------------------------------------------------------------------
+7. New surface: observability HTTP server
+--------------------------------------------------------------------------
+
+Stock beanstalkd exposes no HTTP endpoints; its only introspection is the
+"stats"/"stats-tube"/"stats-job" YAML commands over the beanstalk protocol
+itself. beanstalkd-pi additionally starts a plain HTTP server
+(-http-addr, default :11301, admin.go/metrics.go) with:
+
+ - GET /metrics    — Prometheus text-exposition format: job counts by
+                      state (global and per-tube), cumulative command
+                      counters, connection roles, tube pause state, uptime,
+                      drain flag. Derived from the same counters as the
+                      "stats" command but reshaped for scraping instead of
+                      YAML-over-TCP.
+ - GET /healthz    — trivial liveness probe; does not take the server
+                      lock, so it stays responsive under contention on the
+                      main event loop.
+ - GET /debug/pprof/* — Go's net/http/pprof, only registered when -pprof is
+                      passed (off by default; exposes stack/heap/goroutine
+                      profiling, which stock beanstalkd has no analogue for
+                      since it isn't a garbage-collected runtime).
+
+This server is entirely additive — it shares state with the beanstalk
+protocol listener but does not change any reply on the wire protocol.
