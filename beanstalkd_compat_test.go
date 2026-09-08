@@ -657,6 +657,82 @@ func TestCompat_ListTubesWatched(t *testing.T) {
 	}
 }
 
+// TestCompat_TubeGC checks protocol.txt's "If a tube is empty ... and no
+// client refers to it, it will be deleted": a tube vanishes from list-tubes
+// as soon as it has no ready/delayed/reserved/buried jobs and no connection
+// uses or watches it, whether that reference drops via delete, use, ignore,
+// or the connection simply going away — but "default" never does.
+func TestCompat_TubeGC(t *testing.T) {
+	addr := startTestServer(t)
+
+	// use + delete: the tube survives while still in use, and disappears
+	// once the using connection moves elsewhere.
+	c1 := dial(t, addr)
+	c1.send("use gone")
+	c1.expect("USING gone")
+
+	c1.sendJob("put 0 0 60 3", "xyz")
+	line := c1.readLine()
+	id := strings.TrimPrefix(line, "INSERTED ")
+
+	c1.send("delete " + id)
+	c1.expect("DELETED")
+
+	c1.send("list-tubes")
+	if got := c1.readOK(); !strings.Contains(got, "- gone\n") {
+		t.Fatalf("expected list-tubes to still contain gone (still in use), got:\n%s", got)
+	}
+
+	c1.send("use default")
+	c1.expect("USING default")
+
+	c1.send("list-tubes")
+	if got := c1.readOK(); strings.Contains(got, "- gone\n") {
+		t.Fatalf("expected list-tubes to no longer contain gone, got:\n%s", got)
+	}
+
+	// watch + ignore: an empty, never-used tube disappears as soon as the
+	// last watcher ignores it.
+	c2 := dial(t, addr)
+	c2.send("watch temp")
+	c2.expect("WATCHING 2")
+
+	c2.send("ignore temp")
+	c2.expect("WATCHING 1")
+
+	c2.send("list-tubes")
+	if got := c2.readOK(); strings.Contains(got, "- temp\n") {
+		t.Fatalf("expected list-tubes to no longer contain temp, got:\n%s", got)
+	}
+
+	// connection close: an empty tube only referenced by a connection that
+	// then disconnects disappears too.
+	c3 := dial(t, addr)
+	c3.send("use closeme")
+	c3.expect("USING closeme")
+	c3.nc.Close()
+
+	c1.send("list-tubes")
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		got := c1.readOK()
+		if !strings.Contains(got, "- closeme\n") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected list-tubes to no longer contain closeme, got:\n%s", got)
+		}
+		time.Sleep(50 * time.Millisecond)
+		c1.send("list-tubes")
+	}
+
+	// default is never collected, even when briefly empty and unreferenced.
+	c1.send("list-tubes")
+	if got := c1.readOK(); !strings.Contains(got, "- default\n") {
+		t.Fatalf("expected list-tubes to always contain default, got:\n%s", got)
+	}
+}
+
 // ---- stats ------------------------------------------------------------------
 
 func TestCompat_StatsCommands(t *testing.T) {

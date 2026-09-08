@@ -200,6 +200,28 @@ func (s *Server) makeTube(name string) *Tube {
 	return t
 }
 
+// gcTube removes t from the tube map once it is both empty (no ready,
+// delayed, reserved, or buried jobs) and unreferenced (no connection uses
+// or watches it), mirroring stock beanstalkd's per-tube refcounting
+// (tube_iref/tube_dref in tube.c) and protocol.txt: "If a tube is empty
+// ... and no client refers to it, it will be deleted." The "default" tube
+// is exempt: stock beanstalkd holds a permanent reference to it via the
+// process-lifetime default_tube global, so it never gets collected.
+//
+// Callers must hold s.mu.
+func (s *Server) gcTube(t *Tube) {
+	if t == nil || t.Name == "default" {
+		return
+	}
+	if t.Ready.Len() != 0 || t.Delay.Len() != 0 || t.Stat.ReservedCt != 0 || t.Stat.BuriedCt != 0 {
+		return
+	}
+	if t.Stat.UsingCt != 0 || t.Stat.WatchingCt != 0 {
+		return
+	}
+	delete(s.tubes, t.Name)
+}
+
 func (s *Server) Run() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGINT, syscall.SIGTERM)
@@ -266,9 +288,11 @@ func (s *Server) handleConn(nc net.Conn) {
 		c.reenqueueReservedJobs()
 		if c.UseTube != nil {
 			c.UseTube.Stat.UsingCt--
+			s.gcTube(c.UseTube)
 		}
 		for t := range c.WatchMap {
 			t.Stat.WatchingCt--
+			s.gcTube(t)
 		}
 		delete(s.conns, id)
 		s.currentConns--

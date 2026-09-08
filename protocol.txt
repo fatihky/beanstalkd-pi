@@ -40,6 +40,9 @@ Behavior that matches stock beanstalkd exactly:
  - New connections start using and watching only "default".
  - "ignore" refuses to remove the last tube in the watch list
    (NOT_IGNORED), and kick prefers buried jobs over delayed jobs.
+ - Tube GC: a tube is removed once it is both empty (no ready, delayed,
+   reserved, or buried jobs) and unreferenced (no connection uses or
+   watches it) — see Tube GC below.
  - Name/tube validation charset (letters, digits, "-+/;.$_()", no leading
    "-"), the 224-byte command line cap, and the 200-byte tube name cap.
  - stats/stats-tube/stats-job field sets and cumulative cmd-* counters
@@ -65,14 +68,16 @@ Behavior that matches stock beanstalkd exactly:
    beanstalkd-pi's number literally; the stock C server's actual default
    is 2**16-1. There is no flag to change the limit at runtime (see below).
 
- - Tubes are never deleted. protocol.txt: "If a tube is empty ... and no
-   client refers to it, it will be deleted." beanstalkd-pi creates tubes
-   on demand (via use/watch/put) but keeps every tube it has ever seen in
-   its tube map for the life of the process. list-tubes and current-tubes
-   will therefore report tubes long after every job and every
-   using/watching connection is gone. This is invisible to a client that
-   only inspects tubes it still cares about, but is observable via
-   list-tubes/stats-tube/current-tubes bookkeeping.
+ - Tube GC (server.go: gcTube) mirrors stock beanstalkd's per-tube
+   refcounting (tube_iref/tube_dref in tube.c): a tube created on demand
+   (via use/watch/put) is removed from the tube map as soon as it has no
+   ready, delayed, reserved, or buried jobs and no connection uses or
+   watches it — checked synchronously at every point that can cause
+   either condition (job delete, use switching tubes, ignore, and
+   connection close), not on a delay. "default" is the one exception: it
+   is created at startup and, like stock's process-lifetime default_tube
+   global, is never collected even when briefly empty and unreferenced.
+   list-tubes, stats-tube, and current-tubes reflect this immediately.
 
  - stats' binlog-* fields (binlog-oldest-index, binlog-current-index,
    binlog-max-size, binlog-records-written, binlog-records-migrated) are

@@ -266,6 +266,7 @@ func (c *Conn) handleUse(args []string) {
 	oldTube := c.UseTube
 	if oldTube != nil {
 		oldTube.Stat.UsingCt--
+		c.Server.gcTube(oldTube)
 	}
 
 	t := c.Server.makeTube(name)
@@ -483,10 +484,12 @@ func (c *Conn) handleDelete(args []string) {
 		return
 	}
 
+	t := j.Tube
 	if !c.Server.deleteJob(j) {
 		c.replyWord("NOT_FOUND\r\n")
 		return
 	}
+	c.Server.gcTube(t)
 
 	c.replyWord("DELETED\r\n")
 }
@@ -665,6 +668,7 @@ func (c *Conn) handleIgnore(args []string) {
 	if ok && c.WatchMap[t] {
 		delete(c.WatchMap, t)
 		t.Stat.WatchingCt--
+		c.Server.gcTube(t)
 	}
 
 	c.replyWord(fmt.Sprintf("WATCHING %d\r\n", len(c.WatchMap)))
