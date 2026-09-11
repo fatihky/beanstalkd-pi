@@ -95,6 +95,8 @@ func (c *Conn) dispatchCmd(line string) {
 	switch cmd {
 	case "put":
 		c.handlePut(parts[1:])
+	case "put-at":
+		c.handlePutAt(parts[1:])
 	case "use":
 		c.handleUse(parts[1:])
 	case "reserve":
@@ -187,6 +189,49 @@ func (c *Conn) handlePut(args []string) {
 		return
 	}
 
+	c.startPut(uint32(pri), time.Duration(delaySec)*time.Second, time.Time{}, ttrSec, bodySize, false)
+}
+
+func (c *Conn) handlePutAt(args []string) {
+	if len(args) != 4 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	pri, err := strconv.ParseUint(args[0], 10, 32)
+	if err != nil {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	ts, err := strconv.ParseInt(args[1], 10, 64)
+	if err != nil {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	ttrSec, err := strconv.ParseUint(args[2], 10, 32)
+	if err != nil {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	bodySize, err := strconv.Atoi(args[3])
+	if err != nil || bodySize < 0 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	c.startPut(uint32(pri), 0, time.Unix(ts, 0), ttrSec, bodySize, true)
+}
+
+// startPut validates and begins insertion of a new job, shared by put and
+// put-at. Exactly one of delay/scheduledAt is meaningful: delay for put's
+// relative wait, scheduledAt for put-at's absolute wake time; pass the zero
+// value for whichever doesn't apply. scheduledAt is resolved to a concrete
+// delay by enqueueJob at the moment the job is actually enqueued (after the
+// body has been read), so it isn't affected by how long that takes.
+func (c *Conn) startPut(pri uint32, delay time.Duration, scheduledAt time.Time, ttrSec uint64, bodySize int, isPutAt bool) {
 	if bodySize > c.Server.maxJobSize {
 		c.replyWord("JOB_TOO_BIG\r\n")
 		c.state = StateBitBucket
@@ -206,7 +251,11 @@ func (c *Conn) handlePut(args []string) {
 	}
 
 	id := c.Server.nextID.Add(1)
-	c.Server.globalStats.CmdPut++
+	if isPutAt {
+		c.Server.globalStats.CmdPutAt++
+	} else {
+		c.Server.globalStats.CmdPut++
+	}
 	c.Server.globalStats.TotalJobs++
 	if !c.isProducer {
 		c.isProducer = true
@@ -220,15 +269,16 @@ func (c *Conn) handlePut(args []string) {
 	}
 
 	j := &Job{
-		ID:        id,
-		Pri:       uint32(pri),
-		Delay:     time.Duration(delaySec) * time.Second,
-		TTR:       ttr,
-		BodySize:  bodySize,
-		CreatedAt: time.Now(),
-		State:     StateInvalid,
-		Tube:      c.UseTube,
-		Body:      make([]byte, bodySize+2),
+		ID:          id,
+		Pri:         pri,
+		Delay:       delay,
+		ScheduledAt: scheduledAt,
+		TTR:         ttr,
+		BodySize:    bodySize,
+		CreatedAt:   time.Now(),
+		State:       StateInvalid,
+		Tube:        c.UseTube,
+		Body:        make([]byte, bodySize+2),
 	}
 
 	c.inJob = j

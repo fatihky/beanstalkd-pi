@@ -6,7 +6,7 @@ beanstalkd/doc/protocol.txt (git submodule, C reference implementation).
 Read that file first for the full protocol (error replies, every
 command's arguments and replies, stats keys, and so on); it applies to
 beanstalkd-pi unchanged except where noted below. This file only records
-where beanstalkd-pi's wire behavior diverges from it, plus the four
+where beanstalkd-pi's wire behavior diverges from it, plus the five
 extension commands that have no stock equivalent at all.
 
 Everything about this implementation that is not part of the wire
@@ -65,7 +65,7 @@ Error replies:
  - INTERNAL_ERROR is never sent; not part of this server's error
    vocabulary.
 
- - UNKNOWN_COMMAND: four commands beyond stock's set are recognized
+ - UNKNOWN_COMMAND: five commands beyond stock's set are recognized
    instead of producing this reply — see "Extension Commands" below.
 
 put:
@@ -79,6 +79,9 @@ put:
    above — there is no fixed-size priority queue to run out of memory
    growing. put only ever answers INSERTED, JOB_TOO_BIG, DRAINING, or
    EXPECTED_CRLF.
+
+ - See also "put-at" under "Extension Commands" below, which takes an
+   absolute Unix timestamp instead of a relative delay.
 
 reserve / reserve-with-timeout:
 
@@ -111,6 +114,10 @@ stats-job:
 
 stats:
 
+ - "cmd-put" is immediately followed by "cmd-put-at", an extra key with
+   no stock equivalent — see "Extension Commands" below. Stock clients
+   ignore unknown stats keys, so this is transparent to them.
+
  - "cmd-kick" is immediately followed by "cmd-kick-tube", an extra key
    with no stock equivalent — see "Extension Commands" below. Stock
    clients ignore unknown stats keys, so this is transparent to them.
@@ -131,7 +138,7 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The four commands below have no equivalent in stock beanstalkd's protocol.
+The five commands below have no equivalent in stock beanstalkd's protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
 shadow, a stock command; beanstalkd-pi recognizes them in addition to the
@@ -148,6 +155,35 @@ The response is always:
 
 There is no error case beyond the ones common to all commands (BAD_FORMAT,
 UNKNOWN_COMMAND). Increments the "cmd-ping" stats counter.
+
+The put-at command is "put" with an absolute schedule time instead of a
+relative delay — useful for "run at midnight" or any other job whose
+target time is more naturally a timestamp than an offset from now, without
+the client having to compute (and keep re-computing, if queueing is slow
+or retried) "target time minus current time" itself, which drifts under
+clock skew or a slow producer. Its form is:
+
+    put-at <pri> <unix-ts> <ttr> <bytes>\r\n
+           <data>\r\n
+
+ - <pri>, <ttr>, <bytes>, and <data> have the same meaning as in "put".
+
+ - <unix-ts> is an integer number of seconds since the Unix epoch (UTC),
+   the absolute time at which the job should become ready. A timestamp at
+   or before the current time behaves like "put"'s delay 0: the job is
+   ready immediately. There is no upper or lower bound beyond fitting in a
+   64-bit signed integer.
+
+The job's actual wake time is resolved from <unix-ts> against the clock at
+the moment the job is enqueued (after its body has been fully read), not
+when the command line is parsed, so time spent reading a large body never
+pushes the job's ready time later. Once enqueued, a delayed put-at job is
+indistinguishable from a delayed put job: it sits in the same per-tube
+delay heap, is promoted to ready by the same tick loop, and — like put —
+only ever answers INSERTED, JOB_TOO_BIG, DRAINING, or EXPECTED_CRLF (see
+"put" above for why BURIED and OUT_OF_MEMORY are never sent). A malformed
+command line replies BAD_FORMAT. Increments the "cmd-put-at" stats counter
+(see the "stats" command above); "cmd-put" is unaffected by put-at calls.
 
 The kick-tube command is "kick" restricted to an explicit tube instead of
 the connection's currently used tube — useful for an operator kicking a

@@ -25,6 +25,7 @@ const (
 
 type GlobalStats struct {
 	CmdPut                uint64
+	CmdPutAt              uint64
 	CmdPeek               uint64
 	CmdPeekReady          uint64
 	CmdPeekDelayed        uint64
@@ -587,6 +588,19 @@ func (s *Server) dropOrReenqueue(j *Job) {
 func (s *Server) enqueueJob(j *Job) {
 	t := j.Tube
 	t.Tombstoned = false
+	// put-at requests an absolute wake time rather than a relative delay.
+	// Resolve it against the clock here, at the moment the job actually
+	// enters the delay heap, so time spent earlier (reading the job body,
+	// waiting for the lock) never drifts the target time. Consumed once:
+	// later re-enqueues of this same job (release, recovery) go through
+	// Delay only, since ScheduledAt is left zeroed after this.
+	if !j.ScheduledAt.IsZero() {
+		j.Delay = time.Until(j.ScheduledAt)
+		if j.Delay < 0 {
+			j.Delay = 0
+		}
+		j.ScheduledAt = time.Time{}
+	}
 	if j.Delay > 0 {
 		j.State = StateDelayed
 		j.DeadlineAt = time.Now().Add(j.Delay)
@@ -624,6 +638,7 @@ current-jobs-reserved: %d
 current-jobs-delayed: %d
 current-jobs-buried: %d
 cmd-put: %d
+cmd-put-at: %d
 cmd-peek: %d
 cmd-peek-ready: %d
 cmd-peek-delayed: %d
@@ -680,6 +695,7 @@ platform: %s
 		s.delayedCt,
 		s.buriedCt,
 		gs.CmdPut,
+		gs.CmdPutAt,
 		gs.CmdPeek,
 		gs.CmdPeekReady,
 		gs.CmdPeekDelayed,

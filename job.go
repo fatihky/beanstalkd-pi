@@ -30,21 +30,22 @@ func stateName(s byte) string {
 }
 
 type Job struct {
-	ID         uint64
-	Pri        uint32
-	Delay      time.Duration
-	TTR        time.Duration
-	BodySize   int // size as reported to clients (without trailing \r\n)
-	CreatedAt  time.Time
-	DeadlineAt time.Time
-	ReserveCt  uint32
-	TimeoutCt  uint32
-	ReleaseCt  uint32
-	BuryCt     uint32
-	KickCt     uint32
-	State      byte
-	Tube       *Tube
-	Body       []byte
+	ID          uint64
+	Pri         uint32
+	Delay       time.Duration
+	ScheduledAt time.Time // put-at: absolute wake time, resolved to Delay by enqueueJob
+	TTR         time.Duration
+	BodySize    int // size as reported to clients (without trailing \r\n)
+	CreatedAt   time.Time
+	DeadlineAt  time.Time
+	ReserveCt   uint32
+	TimeoutCt   uint32
+	ReleaseCt   uint32
+	BuryCt      uint32
+	KickCt      uint32
+	State       byte
+	Tube        *Tube
+	Body        []byte
 
 	// For buried list (doubly-linked)
 	buriedPrev *Job

@@ -86,6 +86,7 @@ func cmdCounters(gs GlobalStats) []struct {
 		value uint64
 	}{
 		{"put", gs.CmdPut},
+		{"put_at", gs.CmdPutAt},
 		{"peek", gs.CmdPeek},
 		{"peek_ready", gs.CmdPeekReady},
 		{"peek_delayed", gs.CmdPeekDelayed},

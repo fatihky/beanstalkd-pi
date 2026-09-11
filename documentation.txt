@@ -21,9 +21,9 @@ is no internal/ or pkg/ split.
 
 On top of the stock wire protocol, beanstalkd-pi adds:
 
- - three extension commands (ping, kick-tube, delete-tube) — see
-   protocol.txt's "beanstalkd-pi Extension Commands" section for their
-   full wire specification;
+ - five extension commands (ping, kick-tube, delete-tube, peek-tube,
+   put-at) — see protocol.txt's "beanstalkd-pi Extension Commands"
+   section for their full wire specification;
  - a pluggable persistence layer (SQLite, or none) in place of stock's
    append-only binlog — section 4 below;
  - a plain HTTP server for metrics and health checks, with no equivalent
@@ -63,7 +63,7 @@ Run a single test:
     go test -run TestCompat_PutReserveDelete .
 
 Features added on top of stock beanstalkd (ping, kick-tube, delete-tube,
-...) get their own test file(s), reusing the same harness
+peek-tube, put-at, ...) get their own test file(s), reusing the same harness
 (compat_harness_test.go: testClient, dial, startTestServer), with names
 deliberately not prefixed TestCompat_ so the compatibility suite stays
 runnable in isolation.
@@ -233,7 +233,7 @@ Built-in adapters:
 
 Persistence hooks — the server persists job state at these points:
 
- - put — after the job is enqueued.
+ - put / put-at — after the job is enqueued.
  - release — after the job is re-enqueued with new priority/delay.
  - bury — after the job is moved to the buried list.
  - kick / kick-job — after the job is moved back to ready.
