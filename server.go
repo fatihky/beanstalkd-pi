@@ -39,6 +39,7 @@ type GlobalStats struct {
 	CmdRelease            uint64
 	CmdBury               uint64
 	CmdKick               uint64
+	CmdKickTube           uint64
 	CmdStats              uint64
 	CmdStatsJob           uint64
 	CmdStatsTube          uint64
@@ -558,6 +559,7 @@ cmd-delete: %d
 cmd-release: %d
 cmd-bury: %d
 cmd-kick: %d
+cmd-kick-tube: %d
 cmd-stats: %d
 cmd-stats-job: %d
 cmd-stats-tube: %d
@@ -611,6 +613,7 @@ platform: %s
 		gs.CmdRelease,
 		gs.CmdBury,
 		gs.CmdKick,
+		gs.CmdKickTube,
 		gs.CmdStats,
 		gs.CmdStatsJob,
 		gs.CmdStatsTube,

@@ -101,6 +101,7 @@ func cmdCounters(gs GlobalStats) []struct {
 		{"release", gs.CmdRelease},
 		{"bury", gs.CmdBury},
 		{"kick", gs.CmdKick},
+		{"kick_tube", gs.CmdKickTube},
 		{"kick_job", gs.CmdKickJob},
 		{"stats", gs.CmdStats},
 		{"stats_job", gs.CmdStatsJob},

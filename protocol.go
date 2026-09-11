@@ -125,6 +125,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handlePeekBuried()
 	case "kick":
 		c.handleKick(parts[1:])
+	case "kick-tube":
+		c.handleKickTube(parts[1:])
 	case "kick-job":
 		c.handleKickJob(parts[1:])
 	case "stats-job":
@@ -760,6 +762,56 @@ func (c *Conn) sendFoundJob(j *Job) {
 	c.writeAll(data)
 }
 
+// kickTube moves up to bound jobs of t from buried (or, if no buried jobs,
+// from delayed) into the ready queue, updating per-tube and global
+// counters. Caller must hold Server.mu.
+func (s *Server) kickTube(t *Tube, bound int) int {
+	kicked := 0
+
+	head := t.BuriedHead
+	for j := head.buriedNext; j != head && kicked < bound; {
+		next := j.buriedNext
+		t.buryRemove(j)
+		t.Stat.BuriedCt--
+		s.buriedCt--
+		j.KickCt++
+		j.State = StateReady
+		j.DeadlineAt = time.Time{}
+		t.Ready.Push(j)
+		t.Stat.ReadyCt++
+		s.readyCt++
+		if j.Pri < 1024 {
+			t.Stat.UrgentCt++
+			s.globalUrgentCt++
+		}
+		s.persistJob(j)
+		kicked++
+		j = next
+	}
+
+	if kicked == 0 {
+		for t.Delay.Len() > 0 && kicked < bound {
+			j := t.Delay.Pop()
+			t.Stat.DelayedCt--
+			s.delayedCt--
+			j.KickCt++
+			j.State = StateReady
+			j.DeadlineAt = time.Time{}
+			t.Ready.Push(j)
+			t.Stat.ReadyCt++
+			s.readyCt++
+			if j.Pri < 1024 {
+				t.Stat.UrgentCt++
+				s.globalUrgentCt++
+			}
+			s.persistJob(j)
+			kicked++
+		}
+	}
+
+	return kicked
+}
+
 func (c *Conn) handleKick(args []string) {
 	if len(args) != 1 {
 		c.replyWord("BAD_FORMAT\r\n")
@@ -777,50 +829,40 @@ func (c *Conn) handleKick(args []string) {
 
 	c.Server.globalStats.CmdKick++
 
-	t := c.UseTube
-	kicked := 0
+	kicked := c.Server.kickTube(c.UseTube, bound)
+	c.replyWord(fmt.Sprintf("KICKED %d\r\n", kicked))
+}
 
-	head := t.BuriedHead
-	for j := head.buriedNext; j != head && kicked < bound; {
-		next := j.buriedNext
-		t.buryRemove(j)
-		t.Stat.BuriedCt--
-		c.Server.buriedCt--
-		j.KickCt++
-		j.State = StateReady
-		j.DeadlineAt = time.Time{}
-		t.Ready.Push(j)
-		t.Stat.ReadyCt++
-		c.Server.readyCt++
-		if j.Pri < 1024 {
-			t.Stat.UrgentCt++
-			c.Server.globalUrgentCt++
-		}
-		c.Server.persistJob(j)
-		kicked++
-		j = next
+func (c *Conn) handleKickTube(args []string) {
+	if len(args) != 2 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
 	}
 
-	if kicked == 0 {
-		for t.Delay.Len() > 0 && kicked < bound {
-			j := t.Delay.Pop()
-			t.Stat.DelayedCt--
-			c.Server.delayedCt--
-			j.KickCt++
-			j.State = StateReady
-			j.DeadlineAt = time.Time{}
-			t.Ready.Push(j)
-			t.Stat.ReadyCt++
-			c.Server.readyCt++
-			if j.Pri < 1024 {
-				t.Stat.UrgentCt++
-				c.Server.globalUrgentCt++
-			}
-			c.Server.persistJob(j)
-			kicked++
-		}
+	name := args[0]
+	if !validTubeName(name) {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
 	}
 
+	bound, err := strconv.Atoi(args[1])
+	if err != nil || bound < 0 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	c.Server.mu.Lock()
+	defer c.Server.mu.Unlock()
+
+	c.Server.globalStats.CmdKickTube++
+
+	t, ok := c.Server.tubes[name]
+	if !ok {
+		c.replyWord("NOT_FOUND\r\n")
+		return
+	}
+
+	kicked := c.Server.kickTube(t, bound)
 	c.replyWord(fmt.Sprintf("KICKED %d\r\n", kicked))
 }
 

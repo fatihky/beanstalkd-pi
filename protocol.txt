@@ -18,10 +18,17 @@ original protocol.
 --------------------------------------------------------------------------
 
 All 25 commands from beanstalkd/doc/protocol.txt are implemented, with
-identical command lines, argument parsing, and reply formats, plus one
-extra command: ping, which replies "PONG" and increments cmd-ping. It is
-not part of stock beanstalkd's protocol; clients that send anything
-unknown get UNKNOWN_COMMAND, so this cannot collide with a stock command.
+identical command lines, argument parsing, and reply formats, plus two
+extra commands that are not part of stock beanstalkd's protocol. Stock
+clients that send anything unknown get UNKNOWN_COMMAND, so neither can
+collide with a stock command:
+
+ - ping — replies "PONG" and increments cmd-ping.
+ - kick-tube <tube> <bound> — the "kick" command restricted to an explicit
+   tube instead of the used tube. Replies "KICKED <count>", or
+   "NOT_FOUND" if the named tube does not exist (bad format replies
+   exactly as "kick"). Semantics match "kick" on that tube, including the
+   preference for buried jobs over delayed jobs. Increments cmd-kick-tube.
 
 Producer:      put, use
 Worker:        reserve, reserve-with-timeout, reserve-job, delete, release,
@@ -49,7 +56,10 @@ Behavior that matches stock beanstalkd exactly:
  - Name/tube validation charset (letters, digits, "-+/;.$_()", no leading
    "-"), the 224-byte command line cap, and the 200-byte tube name cap.
  - stats/stats-tube/stats-job field sets and cumulative cmd-* counters
-   match protocol.txt's list field-for-field (see exceptions below).
+   match protocol.txt's list field-for-field, plus one extra cumulative
+   counter: cmd-kick-tube, which appears immediately after cmd-kick.
+   Stock clients ignore unknown stats keys, so this is transparent to
+   them.
 
 --------------------------------------------------------------------------
 2. Wire-protocol differences
