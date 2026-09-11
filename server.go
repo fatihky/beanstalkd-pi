@@ -36,6 +36,7 @@ type GlobalStats struct {
 	CmdWatch              uint64
 	CmdIgnore             uint64
 	CmdDelete             uint64
+	CmdDeleteTube         uint64
 	CmdRelease            uint64
 	CmdBury               uint64
 	CmdKick               uint64
@@ -367,20 +368,7 @@ func (s *Server) tick(now time.Time) {
 				c.unreserveJob(j)
 				j.TimeoutCt++
 				s.globalStats.JobTimeouts++
-				j.State = StateReady
-				j.DeadlineAt = time.Time{}
-				t := j.Tube
-				if t != nil {
-					t.Ready.Push(j)
-					t.Stat.ReadyCt++
-					t.Stat.ReservedCt--
-					s.readyCt++
-					s.reservedCt--
-					if j.Pri < 1024 {
-						t.Stat.UrgentCt++
-						s.globalUrgentCt++
-					}
-				}
+				s.dropOrReenqueue(j)
 			}
 			j = next
 		}
@@ -506,8 +494,98 @@ func (s *Server) deleteJob(j *Job) bool {
 	return true
 }
 
+// finishDeleteJob removes j from the index and persistence and marks it
+// invalid, without touching any heap/list it may still be linked into -
+// callers are responsible for having already unlinked it (or never having
+// linked it, as with a freshly-purged ready/delayed/buried job). Caller
+// must hold s.mu.
+func (s *Server) finishDeleteJob(j *Job) {
+	if j.Tube != nil {
+		j.Tube.Stat.DeleteCt++
+	}
+	s.jobIdx.Remove(j.ID)
+	s.persistDelete(j.ID)
+	j.State = StateInvalid
+}
+
+// purgeTube deletes every ready, delayed, and buried job in t and marks
+// t tombstoned, so a job still reserved by another connection at the time
+// is dropped rather than re-enqueued once that connection is done with
+// it (see Tube.Tombstoned). Returns the number of jobs deleted; jobs
+// still reserved elsewhere are not counted here since they are deleted
+// later, asynchronously. Caller must hold s.mu.
+func (s *Server) purgeTube(t *Tube) int {
+	purged := 0
+
+	for t.Ready.Len() > 0 {
+		j := t.Ready.Pop()
+		t.Stat.ReadyCt--
+		s.readyCt--
+		if j.Pri < 1024 {
+			t.Stat.UrgentCt--
+			s.globalUrgentCt--
+		}
+		s.finishDeleteJob(j)
+		purged++
+	}
+
+	for t.Delay.Len() > 0 {
+		j := t.Delay.Pop()
+		t.Stat.DelayedCt--
+		s.delayedCt--
+		s.finishDeleteJob(j)
+		purged++
+	}
+
+	head := t.BuriedHead
+	for j := head.buriedNext; j != head; {
+		next := j.buriedNext
+		t.buryRemove(j)
+		t.Stat.BuriedCt--
+		s.buriedCt--
+		s.finishDeleteJob(j)
+		purged++
+		j = next
+	}
+
+	t.Tombstoned = true
+	return purged
+}
+
+// dropOrReenqueue returns a job that just left the reserved state (TTR
+// timeout here; release/bury handle their own cases in protocol.go) to
+// its tube's ready queue, unless the tube has been tombstoned by
+// delete-tube, in which case the job is deleted instead of resurrecting
+// the tube. Caller must hold s.mu and must not have touched
+// t.Stat.ReservedCt/s.reservedCt yet.
+func (s *Server) dropOrReenqueue(j *Job) {
+	t := j.Tube
+	if t == nil {
+		return
+	}
+	t.Stat.ReservedCt--
+	s.reservedCt--
+
+	if t.Tombstoned {
+		s.finishDeleteJob(j)
+		s.gcTube(t)
+		return
+	}
+
+	j.State = StateReady
+	j.DeadlineAt = time.Time{}
+	t.Ready.Push(j)
+	t.Stat.ReadyCt++
+	s.readyCt++
+	if j.Pri < 1024 {
+		t.Stat.UrgentCt++
+		s.globalUrgentCt++
+	}
+}
+
 func (s *Server) enqueueJob(j *Job) {
 	t := j.Tube
+	t.Tombstoned = false
 	if j.Delay > 0 {
 		j.State = StateDelayed
 		j.DeadlineAt = time.Now().Add(j.Delay)
@@ -556,6 +634,7 @@ cmd-use: %d
 cmd-watch: %d
 cmd-ignore: %d
 cmd-delete: %d
+cmd-delete-tube: %d
 cmd-release: %d
 cmd-bury: %d
 cmd-kick: %d
@@ -610,6 +689,7 @@ platform: %s
 		gs.CmdWatch,
 		gs.CmdIgnore,
 		gs.CmdDelete,
+		gs.CmdDeleteTube,
 		gs.CmdRelease,
 		gs.CmdBury,
 		gs.CmdKick,

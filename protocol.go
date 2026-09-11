@@ -105,6 +105,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handleReserveJob(parts[1:])
 	case "delete":
 		c.handleDelete(parts[1:])
+	case "delete-tube":
+		c.handleDeleteTube(parts[1:])
 	case "release":
 		c.handleRelease(parts[1:])
 	case "bury":
@@ -534,8 +536,18 @@ func (c *Conn) handleRelease(args []string) {
 	}
 
 	c.unreserveJob(j)
-	j.Tube.Stat.ReservedCt--
+	t := j.Tube
+	t.Stat.ReservedCt--
 	c.Server.reservedCt--
+
+	if t.Tombstoned {
+		// The tube was deleted (delete-tube) while this job was
+		// reserved; drop it instead of resurrecting the tube.
+		c.Server.finishDeleteJob(j)
+		c.Server.gcTube(t)
+		c.replyWord("RELEASED\r\n")
+		return
+	}
 
 	j.Pri = uint32(pri)
 	j.Delay = time.Duration(delaySec) * time.Second
@@ -576,15 +588,25 @@ func (c *Conn) handleBury(args []string) {
 	}
 
 	c.unreserveJob(j)
-	j.Tube.Stat.ReservedCt--
+	t := j.Tube
+	t.Stat.ReservedCt--
 	c.Server.reservedCt--
+
+	if t.Tombstoned {
+		// The tube was deleted (delete-tube) while this job was
+		// reserved; drop it instead of resurrecting the tube.
+		c.Server.finishDeleteJob(j)
+		c.Server.gcTube(t)
+		c.replyWord("BURIED\r\n")
+		return
+	}
 
 	j.Pri = uint32(pri)
 	j.State = StateBuried
 	j.BuryCt++
 	j.DeadlineAt = time.Time{}
-	j.Tube.buryPush(j)
-	j.Tube.Stat.BuriedCt++
+	t.buryPush(j)
+	t.Stat.BuriedCt++
 	c.Server.buriedCt++
 	c.Server.persistJob(j)
 
@@ -831,6 +853,45 @@ func (c *Conn) handleKick(args []string) {
 
 	kicked := c.Server.kickTube(c.UseTube, bound)
 	c.replyWord(fmt.Sprintf("KICKED %d\r\n", kicked))
+}
+
+// handleDeleteTube deletes tube by name: every ready, delayed, and
+// buried job in it is deleted outright, and a job still reserved by
+// another connection is deleted too, once that connection is done with
+// it, rather than being allowed to resurrect the tube (see
+// Tube.Tombstoned). A tube with no such holdouts - and, per gcTube, not
+// currently used/watched by any connection - disappears from
+// list-tubes/stats-tube immediately; the "default" tube is never
+// removed from the tube map (mirroring gcTube), but its jobs are still
+// purged. This is a beanstalkd-pi extension, not part of stock
+// beanstalkd's protocol.
+func (c *Conn) handleDeleteTube(args []string) {
+	if len(args) != 1 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	name := args[0]
+	if !validTubeName(name) {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	c.Server.mu.Lock()
+	defer c.Server.mu.Unlock()
+
+	c.Server.globalStats.CmdDeleteTube++
+
+	t, ok := c.Server.tubes[name]
+	if !ok {
+		c.replyWord("NOT_FOUND\r\n")
+		return
+	}
+
+	n := c.Server.purgeTube(t)
+	c.Server.gcTube(t)
+
+	c.replyWord(fmt.Sprintf("DELETED %d\r\n", n))
 }
 
 func (c *Conn) handleKickTube(args []string) {

@@ -18,9 +18,9 @@ original protocol.
 --------------------------------------------------------------------------
 
 All 25 commands from beanstalkd/doc/protocol.txt are implemented, with
-identical command lines, argument parsing, and reply formats, plus two
+identical command lines, argument parsing, and reply formats, plus three
 extra commands that are not part of stock beanstalkd's protocol. Stock
-clients that send anything unknown get UNKNOWN_COMMAND, so neither can
+clients that send anything unknown get UNKNOWN_COMMAND, so none can
 collide with a stock command:
 
  - ping — replies "PONG" and increments cmd-ping.
@@ -29,6 +29,16 @@ collide with a stock command:
    "NOT_FOUND" if the named tube does not exist (bad format replies
    exactly as "kick"). Semantics match "kick" on that tube, including the
    preference for buried jobs over delayed jobs. Increments cmd-kick-tube.
+ - delete-tube <tube> — deletes every ready, delayed, and buried job in
+   the named tube outright. Replies "DELETED <count>" (jobs purged
+   synchronously; a job still reserved by another connection at the time
+   is not counted here, since it is deleted later, asynchronously, once
+   that connection releases/buries/times-out/disconnects rather than
+   being allowed to put the job back - see Tube GC below), or
+   "NOT_FOUND" if the named tube does not exist. A fresh "put" into the
+   tube afterward works normally. The "default" tube's jobs can be purged
+   the same way, but - like stock's process-lifetime default tube - it is
+   never removed from the tube map. Increments cmd-delete-tube.
 
 Producer:      put, use
 Worker:        reserve, reserve-with-timeout, reserve-job, delete, release,
@@ -56,10 +66,10 @@ Behavior that matches stock beanstalkd exactly:
  - Name/tube validation charset (letters, digits, "-+/;.$_()", no leading
    "-"), the 224-byte command line cap, and the 200-byte tube name cap.
  - stats/stats-tube/stats-job field sets and cumulative cmd-* counters
-   match protocol.txt's list field-for-field, plus one extra cumulative
-   counter: cmd-kick-tube, which appears immediately after cmd-kick.
-   Stock clients ignore unknown stats keys, so this is transparent to
-   them.
+   match protocol.txt's list field-for-field, plus two extra cumulative
+   counters: cmd-kick-tube (immediately after cmd-kick) and
+   cmd-delete-tube (immediately after cmd-delete). Stock clients ignore
+   unknown stats keys, so this is transparent to them.
 
 --------------------------------------------------------------------------
 2. Wire-protocol differences
@@ -91,6 +101,19 @@ Behavior that matches stock beanstalkd exactly:
    is created at startup and, like stock's process-lifetime default_tube
    global, is never collected even when briefly empty and unreferenced.
    list-tubes, stats-tube, and current-tubes reflect this immediately.
+
+ - delete-tube (server.go: purgeTube, Tube.Tombstoned) has no stock
+   equivalent: stock tubes only ever disappear via the refcounting GC
+   above, never on demand. purgeTube deletes a tube's ready, delayed, and
+   buried jobs immediately and marks it tombstoned; a job still reserved
+   by another connection at that moment is left alone until that
+   connection is done with it (release/bury/TTR-timeout/disconnect), at
+   which point it is deleted instead of being put back - a tombstoned
+   tube cannot be resurrected by a returning job. A fresh "put" clears
+   the tombstone (server.go: enqueueJob), since the client is
+   deliberately using the tube again. Once empty and unreferenced, a
+   tombstoned tube is removed from the map by the same gcTube path as
+   any other tube.
 
  - stats' binlog-* fields (binlog-oldest-index, binlog-current-index,
    binlog-max-size, binlog-records-written, binlog-records-migrated) are

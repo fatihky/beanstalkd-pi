@@ -31,6 +31,15 @@ type Tube struct {
 	Pause     time.Duration
 	UnpauseAt time.Time
 
+	// Tombstoned is set by delete-tube: the tube's ready, delayed, and
+	// buried jobs have already been purged, and any job still reserved
+	// by another connection at the time is dropped (not re-enqueued)
+	// once that connection releases, buries, times out, or disconnects,
+	// so a stale in-flight job can't resurrect a deleted tube. A fresh
+	// put clears the flag, since the client is deliberately using the
+	// tube again.
+	Tombstoned bool
+
 	mu sync.Mutex
 }
 

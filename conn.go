@@ -137,9 +137,19 @@ func (c *Conn) reenqueueReservedJobs() {
 	for j := c.resHead.resNext; j != &c.resHead; {
 		next := j.resNext
 		c.unreserveJob(j)
+		t := j.Tube
+		if t != nil && t.Tombstoned {
+			// The tube was deleted (delete-tube) while this job was
+			// reserved here; drop it instead of resurrecting the tube.
+			t.Stat.ReservedCt--
+			c.Server.reservedCt--
+			c.Server.finishDeleteJob(j)
+			c.Server.gcTube(t)
+			j = next
+			continue
+		}
 		j.State = StateReady
 		j.DeadlineAt = time.Time{}
-		t := j.Tube
 		if t != nil {
 			t.Ready.Push(j)
 			t.Stat.ReadyCt++
