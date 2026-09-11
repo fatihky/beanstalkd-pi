@@ -10,12 +10,20 @@ internal/ or pkg/ split. `beanstalkd/` is a git submodule vendoring the
 upstream C beanstalkd repo, used only as the reference spec
 (`beanstalkd/doc/protocol.txt`); it is not built or imported.
 
-Read `protocol.txt` before touching `protocol.go`, `server.go`, or the
-persistence layer — it documents exactly where this implementation matches
-stock beanstalkd's wire protocol and where/why it deliberately diverges
-(error replies, tube GC, persistence model, concurrency model, CLI flags,
-the observability HTTP server). Update it when a change affects
-compatibility or architecture.
+Read `protocol.txt` before touching `protocol.go` or `server.go` — it
+mirrors the structure of upstream beanstalkd's own protocol.txt and
+documents exactly where this implementation's wire protocol matches stock
+beanstalkd (same commands, arguments, and replies) and where/why it
+deliberately diverges (error replies, extra commands), plus the three
+extension commands with no stock equivalent. Update it when a change
+affects wire compatibility or adds/changes a command.
+
+Read `documentation.txt` before touching the persistence layer,
+concurrency model, CLI flags, process lifecycle/signals, or the
+observability HTTP server — it covers the application itself: build/run/
+test commands, tube GC, the persistence adapter model, and the
+`/metrics`/`/healthz`/pprof server. Update it when a change affects any
+of those.
 
 ## Commands
 

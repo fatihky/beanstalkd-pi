@@ -1,246 +1,191 @@
-= beanstalkd-pi vs. stock beanstalkd =
+= Beanstalk Protocol (beanstalkd-pi) =
 
-This document tracks how beanstalkd-pi (this repo) compares to stock
-beanstalkd (the C implementation, vendored read-only under beanstalkd/ as a
-git submodule, spec at beanstalkd/doc/protocol.txt). It covers the wire
-protocol (commands, replies, limits) and the architectural choices behind
-the server.
+This file documents beanstalkd-pi's wire protocol as a diff against
+upstream beanstalkd's own spec, vendored read-only in this repo at
+beanstalkd/doc/protocol.txt (git submodule, C reference implementation).
+Read that file first for the full protocol (error replies, every
+command's arguments and replies, stats keys, and so on); it applies to
+beanstalkd-pi unchanged except where noted below. This file only records
+where beanstalkd-pi's wire behavior diverges from it, plus the three
+extension commands that have no stock equivalent at all.
 
-The project's stated goal (see README.md and beanstalkd_compat_test.go) is
-wire-compatibility with stock beanstalkd: any beanstalkd client library
-should work against beanstalkd-pi unmodified. The differences below are
-either (a) deliberate simplifications of behavior that stock clients never
-observe, or (b) new operational surface that has no equivalent in the
-original protocol.
+Everything about this implementation that is not part of the wire
+protocol itself (what the program is, CLI flags, persistence, process
+lifecycle, concurrency model, the observability HTTP server, and so on)
+lives in documentation.txt instead, not here.
 
---------------------------------------------------------------------------
-1. Commands
---------------------------------------------------------------------------
+Job Lifecycle
+-------------
 
-All 25 commands from beanstalkd/doc/protocol.txt are implemented, with
-identical command lines, argument parsing, and reply formats, plus three
-extra commands that are not part of stock beanstalkd's protocol. Stock
-clients that send anything unknown get UNKNOWN_COMMAND, so none can
-collide with a stock command:
+Identical to stock beanstalkd: job.go implements exactly these four
+states ("ready", "reserved", "delayed", "buried") and these transitions,
+driven by the same commands.
 
- - ping — replies "PONG" and increments cmd-ping.
- - kick-tube <tube> <bound> — the "kick" command restricted to an explicit
-   tube instead of the used tube. Replies "KICKED <count>", or
-   "NOT_FOUND" if the named tube does not exist (bad format replies
-   exactly as "kick"). Semantics match "kick" on that tube, including the
-   preference for buried jobs over delayed jobs. Increments cmd-kick-tube.
- - delete-tube <tube> — deletes every ready, delayed, and buried job in
-   the named tube outright. Replies "DELETED <count>" (jobs purged
-   synchronously; a job still reserved by another connection at the time
-   is not counted here, since it is deleted later, asynchronously, once
-   that connection releases/buries/times-out/disconnects rather than
-   being allowed to put the job back - see Tube GC below), or
-   "NOT_FOUND" if the named tube does not exist. A fresh "put" into the
-   tube afterward works normally. The "default" tube's jobs can be purged
-   the same way, but - like stock's process-lifetime default tube - it is
-   never removed from the tube map. Increments cmd-delete-tube.
+   put            reserve               delete
+  -----> [READY] ---------> [RESERVED] --------> *poof*
 
-Producer:      put, use
-Worker:        reserve, reserve-with-timeout, reserve-job, delete, release,
-               bury, touch, watch, ignore
-Other:         peek, peek-ready, peek-delayed, peek-buried, kick, kick-job,
-               stats-job, stats-tube, stats, list-tubes, list-tube-used,
-               list-tubes-watched, pause-tube, quit
 
-Behavior that matches stock beanstalkd exactly:
 
- - Job lifecycle (ready/reserved/delayed/buried) and the state transitions
-   put, reserve, release, bury, kick, delete, touch, and TTR-expiry all
-   drive it exactly as pictured in protocol.txt.
- - Job selection: lowest priority value first, ties broken by insertion
-   order (id), both within a tube and across a connection's watch list.
- - reserve-with-timeout 0 semantics (immediate TIMED_OUT/RESERVED, no
-   blocking), and DEADLINE_SOON firing during the 1-second safety margin
-   before a reserved job's TTR expires.
- - New connections start using and watching only "default".
- - "ignore" refuses to remove the last tube in the watch list
-   (NOT_IGNORED), and kick prefers buried jobs over delayed jobs.
- - Tube GC: a tube is removed once it is both empty (no ready, delayed,
-   reserved, or buried jobs) and unreferenced (no connection uses or
-   watches it) — see Tube GC below.
- - Name/tube validation charset (letters, digits, "-+/;.$_()", no leading
-   "-"), the 224-byte command line cap, and the 200-byte tube name cap.
- - stats/stats-tube/stats-job field sets and cumulative cmd-* counters
-   match protocol.txt's list field-for-field, plus two extra cumulative
-   counters: cmd-kick-tube (immediately after cmd-kick) and
-   cmd-delete-tube (immediately after cmd-delete). Stock clients ignore
-   unknown stats keys, so this is transparent to them.
+   put with delay               release with delay
+  ----------------> [DELAYED] <------------.
+                        |                   |
+                        | (time passes)     |
+                        |                   |
+   put                  v     reserve       |       delete
+  -----------------> [READY] ---------> [RESERVED] --------> *poof*
+                       ^  ^                |  |
+                       |   \  release      |  |
+                       |    `-------------'   |
+                       |                      |
+                       | kick                 |
+                       |                      |
+                       |       bury           |
+                    [BURIED] <---------------'
+                       |
+                       |  delete
+                        `--------> *poof*
 
---------------------------------------------------------------------------
-2. Wire-protocol differences
---------------------------------------------------------------------------
+Tube lifetime differs slightly: a tube is also kept alive by a reserved
+job (a job's reservation does not release its tube), and beanstalkd-pi
+adds a "delete-tube" extension that can purge a tube's jobs on demand
+rather than only through this reference-counted GC. See "Extension
+Commands" below and documentation.txt for the full account.
 
- - No OUT_OF_MEMORY, no INTERNAL_ERROR, no "BURIED <id>" reply on put.
-   Stock beanstalkd can run out of memory growing its internal priority
-   queue and respond to "put" with BURIED instead of INSERTED, or reply
-   OUT_OF_MEMORY/INTERNAL_ERROR to any command. beanstalkd-pi's data
-   structures grow with the Go runtime's ordinary heap allocator, so a
-   client will never observe either reply; "put" only ever answers
-   INSERTED, JOB_TOO_BIG, DRAINING, or EXPECTED_CRLF. A real allocation
-   failure crashes the process (as Go's runtime does on OOM) rather than
-   being reported over the wire.
+Differences from stock
+-----------------------
 
- - Default max-job-size is 65536 bytes (bodySize > 65536 -> JOB_TOO_BIG),
-   one byte more than stock beanstalkd's 65535 (JOB_DATA_SIZE_LIMIT_DEFAULT
-   = (1<<16)-1). protocol.txt's prose ("default: 2**16") matches
-   beanstalkd-pi's number literally; the stock C server's actual default
-   is 2**16-1. There is no flag to change the limit at runtime (see below).
+Error replies:
 
- - Tube GC (server.go: gcTube) mirrors stock beanstalkd's per-tube
-   refcounting (tube_iref/tube_dref in tube.c): a tube created on demand
-   (via use/watch/put) is removed from the tube map as soon as it has no
-   ready, delayed, reserved, or buried jobs and no connection uses or
-   watches it — checked synchronously at every point that can cause
-   either condition (job delete, use switching tubes, ignore, and
-   connection close), not on a delay. "default" is the one exception: it
-   is created at startup and, like stock's process-lifetime default_tube
-   global, is never collected even when briefly empty and unreferenced.
-   list-tubes, stats-tube, and current-tubes reflect this immediately.
+ - OUT_OF_MEMORY is never sent. beanstalkd-pi's data structures grow with
+   the Go runtime's ordinary heap allocator instead of a fixed-size
+   in-process store, so a client never observes this reply; a real
+   allocation failure crashes the process (as any Go program does on
+   OOM) rather than being reported over the wire.
 
- - delete-tube (server.go: purgeTube, Tube.Tombstoned) has no stock
-   equivalent: stock tubes only ever disappear via the refcounting GC
-   above, never on demand. purgeTube deletes a tube's ready, delayed, and
-   buried jobs immediately and marks it tombstoned; a job still reserved
-   by another connection at that moment is left alone until that
-   connection is done with it (release/bury/TTR-timeout/disconnect), at
-   which point it is deleted instead of being put back - a tombstoned
-   tube cannot be resurrected by a returning job. A fresh "put" clears
-   the tombstone (server.go: enqueueJob), since the client is
-   deliberately using the tube again. Once empty and unreferenced, a
-   tombstoned tube is removed from the map by the same gcTube path as
-   any other tube.
+ - INTERNAL_ERROR is never sent; not part of this server's error
+   vocabulary.
 
- - stats' binlog-* fields (binlog-oldest-index, binlog-current-index,
-   binlog-max-size, binlog-records-written, binlog-records-migrated) are
-   hard-coded to 0. There is no binlog (see Persistence below), so these
-   exist only for client parsers that expect the keys to be present.
+ - UNKNOWN_COMMAND: three commands beyond stock's set are recognized
+   instead of producing this reply — see "Extension Commands" below.
 
- - stats-job's "file" field is hard-coded to 0 for the same reason.
+put:
+
+ - max-job-size is exactly 65536 bytes here (a body of 65536 bytes is
+   accepted; 65537 or more is rejected), one byte larger than stock's
+   actual default of 2**16-1 (65535) despite the spec's "default: 2**16"
+   wording. There is no flag to change it at runtime.
+
+ - BURIED is never sent from put, for the same reason as OUT_OF_MEMORY
+   above — there is no fixed-size priority queue to run out of memory
+   growing. put only ever answers INSERTED, JOB_TOO_BIG, DRAINING, or
+   EXPECTED_CRLF.
+
+reserve / reserve-with-timeout:
+
+ - Blocking and DEADLINE_SOON/TIMED_OUT firing are driven by a 100ms
+   polling tick loop rather than stock's timer-heap-driven event
+   reactor; the wire-visible timing is the same to within that
+   resolution.
+
+release:
+
+ - BURIED is never sent, for the same reason as OUT_OF_MEMORY above.
+   release only ever answers RELEASED or NOT_FOUND.
+
+kick:
+
+ - See also "kick-tube" under "Extension Commands" below, which applies
+   this same kick semantics to a named tube instead of only the
+   currently used one.
+
+stats-job:
+
+ - "file" is always 0. There is no binlog, so this field is present only
+   for client parsers that expect the key to exist.
+
+stats:
+
+ - "cmd-kick" is immediately followed by "cmd-kick-tube", an extra key
+   with no stock equivalent — see "Extension Commands" below. Stock
+   clients ignore unknown stats keys, so this is transparent to them.
+
+ - "cmd-pause-tube" is immediately followed by "cmd-delete-tube", an
+   extra key with no stock equivalent — see "Extension Commands" below.
+
+ - All five binlog-* fields ("binlog-oldest-index",
+   "binlog-current-index", "binlog-max-size", "binlog-records-written",
+   "binlog-records-migrated") are hard-coded to 0. There is no binlog
+   (see documentation.txt); these keys exist only for client parsers
+   that expect them to be present.
 
 --------------------------------------------------------------------------
-3. Persistence: write-ahead log vs. pluggable adapter
+Extension Commands
 --------------------------------------------------------------------------
 
-Stock beanstalkd persists via an append-only binary write-ahead log (the
-"binlog", enabled with -b DIR): every state-changing operation on a job is
-appended as a fixed-format record, log files are rotated at -s BYTES, and
-old files are reclaimed once none of their jobs are still live
-("compaction"). Recovery replays the binlog forward.
+The three commands below have no equivalent in stock beanstalkd's protocol.
+A stock client that sends any of these command names against stock
+beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
+shadow, a stock command; beanstalkd-pi recognizes them in addition to the
+full stock set. Nothing else in stock's protocol is affected by their
+presence.
 
-beanstalkd-pi replaces this with a Persistence port/adapter interface
-(persistence.go) with pluggable backends:
+The "ping" command is a bare liveness check. Its form is:
 
- - NoopPersistence (default): discards all writes; no durability at all,
-   equivalent to running stock beanstalkd without -b.
- - SQLitePersistence (-db path): a table of whole jobs keyed by id,
-   upserted/deleted per lifecycle event, tuned for flash storage (WAL
-   journal mode, batched transactions flushed every 1000 ops or 5s,
-   single-writer connection). See README.md "Persistence" for the full
-   write-up.
+    ping\r\n
 
-Practical consequences of this design vs. stock's binlog:
+The response is always:
 
- - Durability window: stock beanstalkd fsyncs on a configurable interval
-   (-f MS, default 50ms) or on every write (-f0), or never (-F).
-   beanstalkd-pi's SQLite adapter batches up to 5 seconds or 1000 ops
-   before a transaction commit — a wider default durability gap than
-   stock's default, with no flag to tighten it short of calling Sync()
-   from custom code.
- - Storage shape: the binlog stores an event log and replays it; the
-   SQLite adapter stores current job state directly (last-write-wins per
-   job id), so there's no replay/compaction step and no binlog file
-   rotation.
- - Custom backends: stock beanstalkd's persistence is not extensible
-   short of forking the C server. beanstalkd-pi's Persistence interface
-   lets a caller of NewServer supply any backend implementing
-   Init/Close/StoreJob/DeleteJob/LoadAllJobs/Sync.
+    PONG\r\n
 
---------------------------------------------------------------------------
-4. Concurrency model
---------------------------------------------------------------------------
+There is no error case beyond the ones common to all commands (BAD_FORMAT,
+UNKNOWN_COMMAND). Increments the "cmd-ping" stats counter.
 
-Stock beanstalkd is a single-threaded, libevent-driven reactor: one event
-loop multiplexes all connections and there is no locking because there is
-no concurrency.
+The kick-tube command is "kick" restricted to an explicit tube instead of
+the connection's currently used tube — useful for an operator kicking a
+tube they are not otherwise using. Its form is:
 
-beanstalkd-pi is a goroutine-per-connection Go server: each accepted
-connection runs its own goroutine (server.go: handleConn), and all shared
-state (tubes, job index, global stats, waiting connections) is guarded by
-a single Server.mu mutex taken for the duration of each command. A
-separate goroutine (tickLoop, 100ms period) sweeps for delayed-job
-promotion, TTR expiry, and reserve timeouts/DEADLINE_SOON — the equivalent
-of stock's event-driven timer callbacks, but polling-based instead of
-timer-heap-driven. Lock-hold and lock-wait times above a configurable
-threshold (-slow-log-threshold, default 50ms) are logged as warnings
-(server.go: lockTraced), which has no equivalent in stock beanstalkd.
+    kick-tube <tube> <bound>\r\n
 
---------------------------------------------------------------------------
-5. Process lifecycle / signals
---------------------------------------------------------------------------
+ - <tube> is a name at most 200 bytes, the tube to kick.
 
- - SIGUSR1 (drain mode): identical semantics in both — stops accepting new
-   "put"s (DRAINING reply), everything else continues to work.
- - SIGINT/SIGTERM: stock beanstalkd does not install handlers for these
-   except a PID-1-only SIGTERM workaround for Docker (exits immediately,
-   no explicit flush step needed since the binlog is durable on write).
-   beanstalkd-pi installs real handlers for both signals unconditionally
-   and performs an explicit graceful shutdown: stop accepting connections,
-   shut down the observability HTTP server, and close the persistence
-   backend (for SQLitePersistence this runs a final WAL checkpoint).
- - SIGPIPE: stock beanstalkd explicitly ignores it (a C-specific concern
-   for writes to closed sockets). Not applicable/needed in Go, whose net
-   package returns a normal error instead of raising SIGPIPE.
+ - <bound> is an integer upper bound on the number of jobs to kick, same
+   meaning as in "kick".
 
---------------------------------------------------------------------------
-6. CLI flags
---------------------------------------------------------------------------
+Semantics on the named tube are identical to "kick" on the currently used
+tube, including the preference for buried jobs over delayed jobs. The
+response is one of:
 
-  stock beanstalkd          beanstalkd-pi              notes
-  ------------------------  --------------------------  ----------------------------------------
-  -l ADDR / -p PORT         -addr ":11300"               combined into one host:port flag
-  -z BYTES                  (none)                       max job size is fixed at 65536, no flag
-  -b DIR                    -db PATH                     binlog dir -> SQLite file path; omitting
-                                                           either disables persistence
-  -s BYTES                  (none)                       no binlog file rotation to size
-  -f MS / -F                (none)                       no fsync-interval knob; SQLite adapter's
-                                                           batching window is fixed in code
-  -u USER                   (none)                       no privilege-drop; run under the desired
-                                                           user via the OS/service manager instead
-  -c / -n                   (none)                        removed upstream too (binlog is always
-                                                           compacted); not applicable here (no binlog)
-  -v / -V / -h               (none, use -h via flag pkg)  Go's flag package provides -h; no -v/-V
-  (none)                    -http-addr ":11301"          observability HTTP server, see below
-  (none)                    -pprof                        expose net/http/pprof on that server
-  (none)                    -log-level / -log-format      structured logging (log/slog), text|json
-  (none)                    -slow-log-threshold            warn on slow locks/reserves (see above)
+ - "KICKED <count>\r\n" — <count> is an integer indicating the number of
+   jobs actually kicked, same as "kick"'s reply.
 
---------------------------------------------------------------------------
-7. New surface: observability HTTP server
---------------------------------------------------------------------------
+ - "NOT_FOUND\r\n" if the named tube does not exist.
 
-Stock beanstalkd exposes no HTTP endpoints; its only introspection is the
-"stats"/"stats-tube"/"stats-job" YAML commands over the beanstalk protocol
-itself. beanstalkd-pi additionally starts a plain HTTP server
-(-http-addr, default :11301, admin.go/metrics.go) with:
+A malformed command line replies BAD_FORMAT, exactly as "kick" does.
+Increments the "cmd-kick-tube" stats counter (see the "stats" command
+above).
 
- - GET /metrics    — Prometheus text-exposition format: job counts by
-                      state (global and per-tube), cumulative command
-                      counters, connection roles, tube pause state, uptime,
-                      drain flag. Derived from the same counters as the
-                      "stats" command but reshaped for scraping instead of
-                      YAML-over-TCP.
- - GET /healthz    — trivial liveness probe; does not take the server
-                      lock, so it stays responsive under contention on the
-                      main event loop.
- - GET /debug/pprof/* — Go's net/http/pprof, only registered when -pprof is
-                      passed (off by default; exposes stack/heap/goroutine
-                      profiling, which stock beanstalkd has no analogue for
-                      since it isn't a garbage-collected runtime).
+The delete-tube command deletes every ready, delayed, and buried job in the
+named tube outright, without requiring each to be reserved and deleted
+individually. Its form is:
 
-This server is entirely additive — it shares state with the beanstalk
-protocol listener but does not change any reply on the wire protocol.
+    delete-tube <tube>\r\n
+
+ - <tube> is a name at most 200 bytes, the tube to purge.
+
+The response is one of:
+
+ - "DELETED <count>\r\n" — <count> is an integer indicating the number of
+   jobs purged synchronously. A job still reserved by another connection at
+   the time of this command is not included in <count>: it is deleted
+   later, asynchronously, once that connection releases, buries, times out
+   on, or disconnects while holding it, rather than being allowed to return
+   the job to the tube (see documentation.txt's Tube GC section for the
+   full mechanism).
+
+ - "NOT_FOUND\r\n" if the named tube does not exist.
+
+A fresh "put" into the tube afterward works normally. The "default" tube's
+jobs can be purged the same way, but — like stock's process-lifetime
+default tube — "default" is never removed from the tube map by this or any
+other command. Increments the "cmd-delete-tube" stats counter (see the
+"stats" command above).
