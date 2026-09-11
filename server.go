@@ -29,6 +29,7 @@ type GlobalStats struct {
 	CmdPeekReady          uint64
 	CmdPeekDelayed        uint64
 	CmdPeekBuried         uint64
+	CmdPeekTube           uint64
 	CmdReserve            uint64
 	CmdReserveWithTimeout uint64
 	CmdTouch              uint64
@@ -627,6 +628,7 @@ cmd-peek: %d
 cmd-peek-ready: %d
 cmd-peek-delayed: %d
 cmd-peek-buried: %d
+cmd-peek-tube: %d
 cmd-reserve: %d
 cmd-reserve-with-timeout: %d
 cmd-touch: %d
@@ -682,6 +684,7 @@ platform: %s
 		gs.CmdPeekReady,
 		gs.CmdPeekDelayed,
 		gs.CmdPeekBuried,
+		gs.CmdPeekTube,
 		gs.CmdReserve,
 		gs.CmdReserveWithTimeout,
 		gs.CmdTouch,

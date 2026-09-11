@@ -6,7 +6,7 @@ beanstalkd/doc/protocol.txt (git submodule, C reference implementation).
 Read that file first for the full protocol (error replies, every
 command's arguments and replies, stats keys, and so on); it applies to
 beanstalkd-pi unchanged except where noted below. This file only records
-where beanstalkd-pi's wire behavior diverges from it, plus the three
+where beanstalkd-pi's wire behavior diverges from it, plus the four
 extension commands that have no stock equivalent at all.
 
 Everything about this implementation that is not part of the wire
@@ -65,7 +65,7 @@ Error replies:
  - INTERNAL_ERROR is never sent; not part of this server's error
    vocabulary.
 
- - UNKNOWN_COMMAND: three commands beyond stock's set are recognized
+ - UNKNOWN_COMMAND: four commands beyond stock's set are recognized
    instead of producing this reply — see "Extension Commands" below.
 
 put:
@@ -98,6 +98,12 @@ kick:
    this same kick semantics to a named tube instead of only the
    currently used one.
 
+peek-ready / peek-delayed / peek-buried:
+
+ - See also "peek-tube" under "Extension Commands" below, which applies
+   this same peek semantics to a named tube instead of only the
+   currently used one.
+
 stats-job:
 
  - "file" is always 0. There is no binlog, so this field is present only
@@ -112,6 +118,9 @@ stats:
  - "cmd-pause-tube" is immediately followed by "cmd-delete-tube", an
    extra key with no stock equivalent — see "Extension Commands" below.
 
+ - "cmd-peek-buried" is immediately followed by "cmd-peek-tube", an extra
+   key with no stock equivalent — see "Extension Commands" below.
+
  - All five binlog-* fields ("binlog-oldest-index",
    "binlog-current-index", "binlog-max-size", "binlog-records-written",
    "binlog-records-migrated") are hard-coded to 0. There is no binlog
@@ -122,7 +131,7 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The three commands below have no equivalent in stock beanstalkd's protocol.
+The four commands below have no equivalent in stock beanstalkd's protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
 shadow, a stock command; beanstalkd-pi recognizes them in addition to the
@@ -189,3 +198,35 @@ jobs can be purged the same way, but — like stock's process-lifetime
 default tube — "default" is never removed from the tube map by this or any
 other command. Increments the "cmd-delete-tube" stats counter (see the
 "stats" command above).
+
+The peek-tube command is "peek-ready"/"peek-delayed"/"peek-buried"
+restricted to an explicit tube instead of the connection's currently used
+tube — useful for an operator inspecting a tube they are not otherwise
+using, without the use/peek/use-back round trips that would otherwise be
+needed (and which would mutate connection state along the way). Its form
+is:
+
+    peek-tube <tube> <state>\r\n
+
+ - <tube> is a name at most 200 bytes, the tube to inspect.
+
+ - <state> is one of "ready", "delayed", or "buried", selecting which of
+   the tube's queues to peek into — same meaning as the "ready"/"delayed"/
+   "buried" halves of "peek-ready"/"peek-delayed"/"peek-buried".
+
+Semantics on the named tube are identical to peek-ready/peek-delayed/
+peek-buried on the currently used tube: peek-tube <tube> ready returns the
+next ready job, peek-tube <tube> delayed the delayed job with the shortest
+delay left, and peek-tube <tube> buried the next job in the buried list
+(oldest first). The response is one of:
+
+ - "FOUND <id> <bytes>\r\n<data>\r\n" — same reply as "peek-ready" etc.
+
+ - "NOT_FOUND\r\n" if the named tube does not exist, or exists but has no
+   job in the requested state.
+
+A malformed command line (wrong number of arguments, an invalid tube name,
+or a <state> other than "ready"/"delayed"/"buried") replies BAD_FORMAT.
+Increments the "cmd-peek-tube" stats counter (see the "stats" command
+above); "cmd-peek-ready"/"cmd-peek-delayed"/"cmd-peek-buried" are
+unaffected by peek-tube calls.

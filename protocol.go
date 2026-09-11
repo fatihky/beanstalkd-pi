@@ -125,6 +125,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handlePeekDelayed()
 	case "peek-buried":
 		c.handlePeekBuried()
+	case "peek-tube":
+		c.handlePeekTube(parts[1:])
 	case "kick":
 		c.handleKick(parts[1:])
 	case "kick-tube":
@@ -772,6 +774,67 @@ func (c *Conn) handlePeekBuried() {
 	}
 
 	j := head.buriedNext
+	c.sendFoundJob(j)
+}
+
+// handlePeekTube is "peek-ready"/"peek-delayed"/"peek-buried" against an
+// explicit tube instead of the connection's currently used tube - useful
+// for an operator inspecting a tube they are not otherwise using, without
+// the use/peek/use-back dance that would otherwise be needed (and which
+// mutates connection state along the way). The tube map lookup makes
+// finding the named tube O(1), same as kick-tube/delete-tube. This is a
+// beanstalkd-pi extension, not part of stock beanstalkd's protocol.
+func (c *Conn) handlePeekTube(args []string) {
+	if len(args) != 2 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	name := args[0]
+	if !validTubeName(name) {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	state := args[1]
+	if state != "ready" && state != "delayed" && state != "buried" {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	c.Server.mu.Lock()
+	defer c.Server.mu.Unlock()
+
+	c.Server.globalStats.CmdPeekTube++
+
+	t, ok := c.Server.tubes[name]
+	if !ok {
+		c.replyWord("NOT_FOUND\r\n")
+		return
+	}
+
+	var j *Job
+	switch state {
+	case "ready":
+		if t.Ready.Len() > 0 {
+			j = t.Ready.Peek()
+		}
+	case "delayed":
+		if t.Delay.Len() > 0 {
+			j = t.Delay.Peek()
+		}
+	case "buried":
+		head := t.BuriedHead
+		if head.buriedNext != head {
+			j = head.buriedNext
+		}
+	}
+
+	if j == nil {
+		c.replyWord("NOT_FOUND\r\n")
+		return
+	}
+
 	c.sendFoundJob(j)
 }
 

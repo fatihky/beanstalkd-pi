@@ -90,6 +90,7 @@ func cmdCounters(gs GlobalStats) []struct {
 		{"peek_ready", gs.CmdPeekReady},
 		{"peek_delayed", gs.CmdPeekDelayed},
 		{"peek_buried", gs.CmdPeekBuried},
+		{"peek_tube", gs.CmdPeekTube},
 		{"reserve", gs.CmdReserve},
 		{"reserve_with_timeout", gs.CmdReserveWithTimeout},
 		{"reserve_job", gs.CmdReserveJob},
