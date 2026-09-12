@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,7 +38,7 @@ func main() {
 
 type config struct {
 	addr           string
-	tube           string
+	tubes          []string
 	numJobs        int
 	duration       time.Duration
 	producers      int
@@ -54,12 +55,13 @@ type config struct {
 func parseFlags(args []string) (*config, error) {
 	fs := flag.NewFlagSet("beanstalkd-bench", flag.ContinueOnError)
 	cfg := &config{}
+	var tubeFlag string
 	fs.StringVar(&cfg.addr, "addr", "127.0.0.1:11300", "beanstalkd address")
-	fs.StringVar(&cfg.tube, "tube", "bench", "tube to put jobs into / reserve from")
+	fs.StringVar(&tubeFlag, "tube", "bench", "tube(s) to put jobs into / reserve from; a comma-separated list (e.g. \"a,b,c\") benchmarks multiple tubes at once, with puts round-robined across them and consumers watching all of them")
 	fs.IntVar(&cfg.numJobs, "n", 10000, "total jobs to put (put/both modes), or max jobs to reserve+delete before stopping (reserve mode); ignored if -duration is set")
 	fs.DurationVar(&cfg.duration, "duration", 0, "run for this long instead of a fixed job count, e.g. 30s")
-	fs.IntVar(&cfg.producers, "producers", 1, "number of concurrent producer connections")
-	fs.IntVar(&cfg.consumers, "consumers", 1, "number of concurrent consumer connections")
+	fs.IntVar(&cfg.producers, "producers", 1, "number of concurrent producer connections (default: len(tubes) when multiple tubes are given and -producers is not set)")
+	fs.IntVar(&cfg.consumers, "consumers", 1, "number of concurrent consumer connections (default: len(tubes) when multiple tubes are given and -consumers is not set)")
 	fs.IntVar(&cfg.bodySize, "body-size", 1024, "job body size in bytes (minimum 8)")
 	fs.UintVar(&cfg.priority, "priority", 1024, "job priority (0 is most urgent)")
 	fs.DurationVar(&cfg.ttr, "ttr", 60*time.Second, "job time-to-run")
@@ -70,11 +72,40 @@ func parseFlags(args []string) (*config, error) {
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
+	producersSet, consumersSet := false, false
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "producers":
+			producersSet = true
+		case "consumers":
+			consumersSet = true
+		}
+	})
 
 	switch cfg.mode {
 	case "both", "put", "reserve":
 	default:
 		return nil, fmt.Errorf("invalid -mode %q: must be \"both\", \"put\", or \"reserve\"", cfg.mode)
+	}
+	for _, t := range strings.Split(tubeFlag, ",") {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			cfg.tubes = append(cfg.tubes, t)
+		}
+	}
+	if len(cfg.tubes) == 0 {
+		return nil, errors.New("-tube must name at least one tube")
+	}
+	// With multiple tubes and no explicit -producers/-consumers, default to
+	// one goroutine per tube so a multi-tube benchmark actually exercises
+	// concurrent connections instead of round-robining a single one.
+	if len(cfg.tubes) > 1 {
+		if !producersSet {
+			cfg.producers = len(cfg.tubes)
+		}
+		if !consumersSet {
+			cfg.consumers = len(cfg.tubes)
+		}
 	}
 	if cfg.bodySize < 8 {
 		cfg.bodySize = 8
@@ -154,7 +185,7 @@ func run(cfg *config) error {
 			go func(id, n int) {
 				defer wg.Done()
 				defer pwg.Done()
-				local := runProducer(ctx, cfg, n, st)
+				local := runProducer(ctx, cfg, id, n, st)
 				latMu.Lock()
 				putLat = append(putLat, local)
 				latMu.Unlock()
@@ -219,8 +250,10 @@ func run(cfg *config) error {
 
 // runProducer dials its own connection and puts n jobs (or, if n <= 0,
 // runs until ctx is done), returning the per-job Put latencies for the
-// jobs it successfully put.
-func runProducer(ctx context.Context, cfg *config, n int, st *stats) []time.Duration {
+// jobs it successfully put. When cfg.tubes names more than one tube,
+// this producer round-robins its puts across all of them, offset by id
+// so that concurrent producers don't all start on the same tube.
+func runProducer(ctx context.Context, cfg *config, id, n int, st *stats) []time.Duration {
 	conn, err := beanstalk.Dial("tcp", cfg.addr)
 	if err != nil {
 		log.Printf("producer: dial %s: %v", cfg.addr, err)
@@ -230,7 +263,6 @@ func runProducer(ctx context.Context, cfg *config, n int, st *stats) []time.Dura
 		return nil
 	}
 	defer conn.Close()
-	conn.Tube = *beanstalk.NewTube(conn, cfg.tube)
 
 	body := make([]byte, cfg.bodySize)
 	for i := 8; i < len(body); i++ {
@@ -242,6 +274,8 @@ func runProducer(ctx context.Context, cfg *config, n int, st *stats) []time.Dura
 		local = make([]time.Duration, 0, n)
 	}
 
+	numTubes := len(cfg.tubes)
+
 loop:
 	for i := 0; n <= 0 || i < n; i++ {
 		select {
@@ -250,6 +284,7 @@ loop:
 		default:
 		}
 
+		conn.Tube.Name = cfg.tubes[(id+i)%numTubes]
 		binary.BigEndian.PutUint64(body[:8], uint64(time.Now().UnixNano()))
 		t0 := time.Now()
 		_, err := conn.Put(body, uint32(cfg.priority), cfg.delay, cfg.ttr)
@@ -265,8 +300,10 @@ loop:
 }
 
 // runConsumer dials its own connection and reserve+deletes jobs from
-// cfg.tube until ctx is done, returning the end-to-end (put-to-reserve)
-// and delete latencies it observed.
+// cfg.tubes until ctx is done, returning the end-to-end (put-to-reserve)
+// and delete latencies it observed. It watches all of cfg.tubes, so
+// with multiple tubes each consumer reserves from whichever one has a
+// job ready first.
 func runConsumer(ctx context.Context, cfg *config, st *stats) (e2e, del []time.Duration) {
 	conn, err := beanstalk.Dial("tcp", cfg.addr)
 	if err != nil {
@@ -274,7 +311,7 @@ func runConsumer(ctx context.Context, cfg *config, st *stats) (e2e, del []time.D
 		return nil, nil
 	}
 	defer conn.Close()
-	conn.TubeSet = *beanstalk.NewTubeSet(conn, cfg.tube)
+	conn.TubeSet = *beanstalk.NewTubeSet(conn, cfg.tubes...)
 
 	for {
 		select {
@@ -322,8 +359,8 @@ func flatten(chunks [][]time.Duration) []time.Duration {
 }
 
 func report(cfg *config, st *stats, elapsed time.Duration, putLat, e2eLat, delLat []time.Duration) {
-	fmt.Printf("beanstalkd-bench: %s tube=%q mode=%s producers=%d consumers=%d body=%dB elapsed=%s\n\n",
-		cfg.addr, cfg.tube, cfg.mode, cfg.producers, cfg.consumers, cfg.bodySize, elapsed.Round(time.Millisecond))
+	fmt.Printf("beanstalkd-bench: %s tubes=%s mode=%s producers=%d consumers=%d body=%dB elapsed=%s\n\n",
+		cfg.addr, strings.Join(cfg.tubes, ","), cfg.mode, cfg.producers, cfg.consumers, cfg.bodySize, elapsed.Round(time.Millisecond))
 
 	if cfg.mode != "reserve" {
 		printSection("PUT", st.putCount, st.putErr, elapsed, putLat)
