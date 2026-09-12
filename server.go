@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -827,8 +828,19 @@ kicks: %d
 }
 
 func (s *Server) formatListTubes() string {
-	result := "---\n"
+	names := make([]string, 0, len(s.tubes))
 	for name := range s.tubes {
+		if name != "default" {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+
+	result := "---\n"
+	if _, ok := s.tubes["default"]; ok {
+		result += "- default\n"
+	}
+	for _, name := range names {
 		result += "- " + name + "\n"
 	}
 	return result
