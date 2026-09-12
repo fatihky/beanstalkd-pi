@@ -104,3 +104,10 @@ On startup, `LoadAllJobs()` is called after `Init()`. All returned jobs are re-e
 ### Dead-Letter Routing
 
 The `set-dlq <tube> <max-attempts> <dead-tube>` extension command (see `protocol.txt`) configures a tube so that once a job has failed delivery (released or TTR-timed-out) `<max-attempts>` times, it's buried in `<dead-tube>` instead of going back to its own tube — reusing the existing buried state and tube-inspection commands (`peek-tube`, `kick-tube`, `stats-tube`) rather than adding a new job state. A dead-lettered job's origin tube is recorded on the job (`stats-job`'s `dlq-from-tube` key) and *is* persisted like any other job field, but a tube's DLQ configuration itself is in-memory only, like `pause-tube`'s pause state — it resets to disabled across a restart.
+
+## Benchmarking
+
+`cmd/beanstalkd-bench` is a load-generation and latency-measurement tool
+for a running beanstalkd/beanstalkd-pi server. See
+[`cmd/beanstalkd-bench/README.md`](cmd/beanstalkd-bench/README.md) for
+build instructions, flags, modes, and sample output.

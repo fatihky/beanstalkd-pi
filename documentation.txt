@@ -43,24 +43,8 @@ Run it:
     go run . -addr :11300                                  # no persistence
     go run . -addr :11300 -db /var/lib/beanstalkd-pi/jobs.db  # SQLite persistence
 
-Build/run the benchmark tool (a separate "main" package under cmd/):
-
-    go build -o beanstalkd-bench ./cmd/beanstalkd-bench
-    ./beanstalkd-bench -addr 127.0.0.1:11300 -mode both -n 10000
-
-It also doubles as a load-testing tool for watching resource usage
-against the observability server's /metrics (section 7): "-mode put"
-with a large -n bulk-loads jobs without reserving them, so they stay
-resident to measure memory usage under a large ready queue, e.g.
-
-    ./beanstalkd-bench -addr 127.0.0.1:11300 -mode put -n 1000000 -producers 8
-
-and "-idle-conns N" (layered on any -mode, or alone via "-mode idle")
-opens N additional connections and holds them open with no job traffic,
-to isolate the server's per-connection CPU/memory overhead under many
-concurrent clients, e.g.
-
-    ./beanstalkd-bench -addr 127.0.0.1:11300 -mode idle -idle-conns 5000 -duration 5m
+The benchmark tool (a separate "main" package under cmd/) is documented
+in its own README: cmd/beanstalkd-bench/README.md.
 
 Run the whole test suite:
 
