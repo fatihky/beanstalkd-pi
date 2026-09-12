@@ -67,7 +67,7 @@ type pendingOp struct {
 func NewSQLitePersistence(path string) *SQLitePersistence {
 	return &SQLitePersistence{
 		path:          path,
-		flushInterval: 5 * time.Second,
+		flushInterval: 1 * time.Second,
 		batchSize:     1000,
 		flushCh:       make(chan struct{}, 1),
 		stopCh:        make(chan struct{}),

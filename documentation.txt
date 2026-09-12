@@ -254,7 +254,7 @@ Built-in adapters:
       disk.
     - Batched transactions — StoreJob/DeleteJob calls are buffered and
       flushed together in a single transaction, either every 1000
-      operations or every 5 seconds, whichever comes first. This is the
+      operations or every 1 second, whichever comes first. This is the
       single biggest lever: one transaction per batch instead of one per
       job event.
     - A single-connection pool serializes all writes through one writer,
