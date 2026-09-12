@@ -631,6 +631,7 @@ func (c *Conn) handleReserveJob(args []string) {
 			j.Tube.Stat.UrgentCt--
 			c.Server.globalUrgentCt--
 		}
+		j.Tube.Stat.WaitHist.Observe(time.Since(j.ReadyAt))
 	case StateBuried:
 		j.Tube.buryRemove(j)
 		j.Tube.Stat.BuriedCt--
@@ -1053,6 +1054,7 @@ func (s *Server) kickTube(t *Tube, bound int) int {
 		j.KickCt++
 		j.State = StateReady
 		j.DeadlineAt = time.Time{}
+		j.ReadyAt = time.Now()
 		t.Ready.Push(j)
 		t.Stat.ReadyCt++
 		s.readyCt++
@@ -1073,6 +1075,7 @@ func (s *Server) kickTube(t *Tube, bound int) int {
 			j.KickCt++
 			j.State = StateReady
 			j.DeadlineAt = time.Time{}
+			j.ReadyAt = time.Now()
 			t.Ready.Push(j)
 			t.Stat.ReadyCt++
 			s.readyCt++
@@ -1227,6 +1230,7 @@ func (c *Conn) handleKickJob(args []string) {
 	j.KickCt++
 	j.State = StateReady
 	j.DeadlineAt = time.Time{}
+	j.ReadyAt = time.Now()
 	j.Tube.Ready.Push(j)
 	j.Tube.Stat.ReadyCt++
 	c.Server.readyCt++

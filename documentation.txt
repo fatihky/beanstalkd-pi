@@ -374,6 +374,15 @@ itself. beanstalkd-pi additionally starts a plain net/http server
     - beanstalkd_tube_connections{tube=...,role=...} (using/watching/waiting)
     - beanstalkd_tube_paused{tube=...}
     - beanstalkd_tube_jobs_total{tube=...}, beanstalkd_tube_deletes_total{tube=...}
+    - beanstalkd_tube_ready_wait_seconds{tube=...} — a per-tube Prometheus
+      histogram (_bucket{le=...}/_sum/_count) of how long each reserved
+      job had spent sitting ready beforehand. Sampled at reservation time
+      (reserve, reserve-with-timeout, reserve-job) from Job.ReadyAt, which
+      every ready-transition site (put, release/TTR-expiry re-enqueue, a
+      delayed job's delay elapsing, kick/kick-tube/kick-job) refreshes -
+      see Histogram in histogram.go and Tube.Stat.WaitHist in tube.go.
+      This is the aggregate stats-job's per-job "age" has no equivalent
+      of, and the number operators actually page on.
 
    Derived from the same counters as the "stats" command but reshaped for
    scraping instead of YAML-over-TCP.

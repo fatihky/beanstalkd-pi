@@ -38,14 +38,22 @@ type Job struct {
 	BodySize    int // size as reported to clients (without trailing \r\n)
 	CreatedAt   time.Time
 	DeadlineAt  time.Time
-	ReserveCt   uint32
-	TimeoutCt   uint32
-	ReleaseCt   uint32
-	BuryCt      uint32
-	KickCt      uint32
-	State       byte
-	Tube        *Tube
-	Body        []byte
+	// ReadyAt is set every time the job (re-)enters StateReady - put,
+	// release, a delayed job's delay elapsing, a TTR expiry's
+	// re-enqueue, or kick/kick-tube/kick-job - and read back at
+	// reservation time to feed Tube.Stat.WaitHist (see findJobForConn
+	// and handleReserveJob). It tracks how long the job actually sat
+	// ready, which can be much shorter than age() for a job that was
+	// delayed or bounced through several release/reserve cycles.
+	ReadyAt   time.Time
+	ReserveCt uint32
+	TimeoutCt uint32
+	ReleaseCt uint32
+	BuryCt    uint32
+	KickCt    uint32
+	State     byte
+	Tube      *Tube
+	Body      []byte
 
 	// DeadLetteredFrom is the name of the tube this job was automatically
 	// routed out of by checkDeadLetter (see server.go), or "" if it never

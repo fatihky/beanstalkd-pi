@@ -380,6 +380,7 @@ func (s *Server) tick(now time.Time) {
 			t.Delay.Pop()
 			j.State = StateReady
 			j.DeadlineAt = time.Time{}
+			j.ReadyAt = now
 			t.Ready.Push(j)
 			t.Stat.ReadyCt++
 			t.Stat.DelayedCt--
@@ -451,6 +452,7 @@ func (s *Server) findJobForConn(c *Conn) *Job {
 			s.globalUrgentCt--
 		}
 		bestTube.Stat.ReservedCt++
+		bestTube.Stat.WaitHist.Observe(time.Since(best.ReadyAt))
 		s.reservedCt++
 		c.reserveJob(best)
 		return best
@@ -628,6 +630,7 @@ func (s *Server) dropOrReenqueue(j *Job) {
 
 	j.State = StateReady
 	j.DeadlineAt = time.Time{}
+	j.ReadyAt = time.Now()
 	t.Ready.Push(j)
 	t.Stat.ReadyCt++
 	s.readyCt++
@@ -663,6 +666,7 @@ func (s *Server) enqueueJob(j *Job) {
 	} else {
 		j.State = StateReady
 		j.DeadlineAt = time.Time{}
+		j.ReadyAt = time.Now()
 		t.Ready.Push(j)
 		t.Stat.ReadyCt++
 		s.readyCt++

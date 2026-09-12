@@ -213,6 +213,15 @@ func writeMetrics(w io.Writer, snap statsSnapshot) {
 	for _, t := range snap.tubes {
 		fmt.Fprintf(w, "beanstalkd_tube_deletes_total{tube=%q} %d\n", t.name, t.stat.DeleteCt)
 	}
+
+	// Per-tube ready-wait histogram: how long a job sat ready before it
+	// was reserved, sampled at reservation time (reserve,
+	// reserve-with-timeout, reserve-job). This is the aggregate
+	// stats-job's per-job "age" has no equivalent of, and the number
+	// people actually page on.
+	writeHistogram(w, "beanstalkd_tube_ready_wait_seconds",
+		"How long jobs sat ready before being reserved, per tube.",
+		snap.tubes, func(st TubeStats) Histogram { return st.WaitHist })
 }
 
 // handleMetrics serves the Prometheus text exposition format.

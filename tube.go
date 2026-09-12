@@ -18,6 +18,13 @@ type TubeStats struct {
 	PauseCt     uint64
 	DeleteCt    uint64
 	PauseTubeCt uint64
+
+	// WaitHist samples how long each job that got reserved out of this
+	// tube had spent sitting ready beforehand (time.Since(j.ReadyAt) at
+	// reservation time). Exposed per tube via /metrics as
+	// beanstalkd_tube_ready_wait_seconds - the aggregate that stats-job's
+	// per-job "age" has no equivalent of.
+	WaitHist Histogram
 }
 
 type Tube struct {
