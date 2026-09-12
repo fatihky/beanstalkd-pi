@@ -6,7 +6,7 @@ beanstalkd/doc/protocol.txt (git submodule, C reference implementation).
 Read that file first for the full protocol (error replies, every
 command's arguments and replies, stats keys, and so on); it applies to
 beanstalkd-pi unchanged except where noted below. This file only records
-where beanstalkd-pi's wire behavior diverges from it, plus the nine
+where beanstalkd-pi's wire behavior diverges from it, plus the ten
 extension commands that have no stock equivalent at all.
 
 Everything about this implementation that is not part of the wire
@@ -164,6 +164,9 @@ stats:
  - "cmd-set-dlq" is immediately followed by "cmd-capabilities", an extra
    key with no stock equivalent — see "Extension Commands" below.
 
+ - "cmd-capabilities" is immediately followed by "cmd-drain", an extra
+   key with no stock equivalent — see "Extension Commands" below.
+
  - "job-timeouts" is immediately followed by "job-dead-lettered", an
    extra key with no stock equivalent: the total number of jobs
    automatically routed to a dead-letter tube by "set-dlq" (see
@@ -179,7 +182,7 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The nine commands below have no equivalent in stock beanstalkd's protocol.
+The ten commands below have no equivalent in stock beanstalkd's protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
 shadow, a stock command; beanstalkd-pi recognizes them in addition to the
@@ -502,3 +505,36 @@ UNKNOWN_COMMAND). The response is always:
 Adding a new extension command means adding it to this list — there is no
 separate registry to keep in sync. Increments the "cmd-capabilities"
 stats counter (see the "stats" command above).
+
+The drain command turns drain mode on or off, or reports its current
+state, as an alternative to sending SIGUSR1 to the process — awkward in
+a container where PID 1 has no attached shell to send a signal from.
+While draining, "put"/"put-at" are rejected with DRAINING (see "put"
+above) but every other command, including "reserve" and "delete", keeps
+working normally, so a worker fleet can stop accepting new work and
+drain what's already queued before a graceful shutdown. Unlike SIGUSR1,
+which can only ever turn drain mode on, "drain off" can turn it back off
+again; drain state is otherwise exactly the in-memory, non-persisted
+flag SIGUSR1 has always set (reported as the "draining" stats field —
+see documentation.txt), so it resets to "off" across a restart same as
+before. Its form is:
+
+    drain on|off|status\r\n
+
+ - "on" turns drain mode on.
+
+ - "off" turns drain mode off.
+
+ - "status" reports the current state without changing it.
+
+Any other argument, or a missing one, is BAD_FORMAT rather than a fourth
+error case. There is no error case beyond that and the ones common to
+all commands (BAD_FORMAT, UNKNOWN_COMMAND) — "on" and "off" are
+idempotent, so draining an already-draining server (or undraining an
+already-undrained one) is not an error. The response is always
+"DRAINING\r\n" or "NOT_DRAINING\r\n", reflecting the state *after* the
+command runs (so "status" and a same-state "on"/"off" produce the same
+reply) — the same DRAINING word "put"/"put-at" use to reject a job while
+draining, reused here as the positive report. Increments the
+"cmd-drain" stats counter (see the "stats" command above) on every call,
+including "status".

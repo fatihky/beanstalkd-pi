@@ -332,7 +332,12 @@ Practical consequences vs. stock's binlog:
 
  - SIGUSR1 (drain mode): identical semantics to stock beanstalkd — stops
    accepting new "put"s (DRAINING reply), everything else continues to
-   work.
+   work. Signal-only in stock beanstalkd; beanstalkd-pi also exposes this
+   as the "drain on|off|status" wire command (protocol.txt), which unlike
+   the signal can turn drain mode back off too — useful in a container,
+   where sending a signal to PID 1 means having a shell in it. Both paths
+   set the same in-memory Server.drainMode flag, so mixing them (drain on
+   via the wire command, then a SIGUSR1) is fine.
  - SIGINT/SIGTERM: stock beanstalkd does not install handlers for these
    except a PID-1-only SIGTERM workaround for Docker (exits immediately,
    no explicit flush step needed since the binlog is durable on write).

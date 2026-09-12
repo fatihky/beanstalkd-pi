@@ -39,6 +39,7 @@ var extensionCommands = []string{
 	"list-connections",
 	"set-dlq",
 	"capabilities",
+	"drain",
 }
 
 type GlobalStats struct {
@@ -75,6 +76,7 @@ type GlobalStats struct {
 	CmdPing               uint64
 	CmdSetDlq             uint64
 	CmdCapabilities       uint64
+	CmdDrain              uint64
 	JobTimeouts           uint64
 	JobsDeadLettered      uint64
 	TotalJobs             uint64
@@ -219,6 +221,20 @@ func (s *Server) lockTraced(op string) func() {
 	}
 }
 
+// setDrain sets drain mode on or off, logging the transition. It backs
+// both SIGUSR1 (on only, for compatibility with stock beanstalkd's
+// signal-based drain) and the "drain on|off" command (which can also
+// turn it back off, useful in a container where sending a signal to
+// PID 1 means having a shell in it).
+func (s *Server) setDrain(on bool) {
+	s.drainMode.Store(on)
+	if on {
+		logger.Info("drain mode activated")
+	} else {
+		logger.Info("drain mode deactivated")
+	}
+}
+
 func (s *Server) makeTube(name string) *Tube {
 	if t, ok := s.tubes[name]; ok {
 		return t
@@ -258,8 +274,7 @@ func (s *Server) Run() {
 		for sig := range sigCh {
 			switch sig {
 			case syscall.SIGUSR1:
-				s.drainMode.Store(true)
-				logger.Info("drain mode activated")
+				s.setDrain(true)
 			case syscall.SIGINT, syscall.SIGTERM:
 				logger.Info("shutting down...")
 				close(s.closeCh)
@@ -725,6 +740,7 @@ cmd-pause-tube: %d
 cmd-ping: %d
 cmd-set-dlq: %d
 cmd-capabilities: %d
+cmd-drain: %d
 job-timeouts: %d
 job-dead-lettered: %d
 total-jobs: %d
@@ -787,6 +803,7 @@ platform: %s
 		gs.CmdPing,
 		gs.CmdSetDlq,
 		gs.CmdCapabilities,
+		gs.CmdDrain,
 		gs.JobTimeouts,
 		gs.JobsDeadLettered,
 		gs.TotalJobs,

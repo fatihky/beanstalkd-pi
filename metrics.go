@@ -115,6 +115,7 @@ func cmdCounters(gs GlobalStats) []struct {
 		{"ping", gs.CmdPing},
 		{"set_dlq", gs.CmdSetDlq},
 		{"capabilities", gs.CmdCapabilities},
+		{"drain", gs.CmdDrain},
 	}
 }
 

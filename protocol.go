@@ -158,6 +158,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handlePing()
 	case "capabilities":
 		c.handleCapabilities()
+	case "drain":
+		c.handleDrain(parts[1:])
 	default:
 		c.replyWord("UNKNOWN_COMMAND\r\n")
 	}
@@ -1445,6 +1447,45 @@ func (c *Conn) handleSetDlq(args []string) {
 	}
 
 	c.replyWord("DLQ_SET\r\n")
+}
+
+// handleDrain implements the "drain on|off|status" extension command:
+// turns drain mode on or off, or reports its current state, without
+// needing to send SIGUSR1 to the process — awkward in a container where
+// PID 1 has no attached shell to send a signal from. Draining rejects
+// new "put"/"put-at" commands with DRAINING (see startPut) while leaving
+// every other command, including reserve/delete, working normally, so a
+// worker fleet can be told to stop accepting new work and drain what's
+// already queued before a graceful shutdown. Unlike SIGUSR1, which can
+// only turn drain mode on, "drain off" can turn it back off again.
+func (c *Conn) handleDrain(args []string) {
+	if len(args) != 1 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	switch args[0] {
+	case "on":
+		c.Server.setDrain(true)
+	case "off":
+		c.Server.setDrain(false)
+	case "status":
+		// No state change; just report below.
+	default:
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	c.Server.mu.Lock()
+	c.Server.globalStats.CmdDrain++
+	draining := c.Server.drainMode.Load()
+	c.Server.mu.Unlock()
+
+	if draining {
+		c.replyWord("DRAINING\r\n")
+	} else {
+		c.replyWord("NOT_DRAINING\r\n")
+	}
 }
 
 func (c *Conn) sendYAML(yaml string) {

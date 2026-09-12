@@ -46,6 +46,7 @@ func TestCapabilitiesListsExtensionCommands(t *testing.T) {
 		"list-connections",
 		"set-dlq",
 		"capabilities",
+		"drain",
 	} {
 		if !strings.Contains(body, "- "+cmd+"\n") {
 			t.Errorf("expected extensions list to contain %q, got:\n%s", cmd, body)
