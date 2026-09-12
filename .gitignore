@@ -1,4 +1,7 @@
+.maki/permissions.toml
+
 /beanstalkd-pi
+/beanstalkd-bench
 
 *.db
 *.db-shm
