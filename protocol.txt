@@ -274,17 +274,32 @@ Increments the "cmd-peek-tube" stats counter (see the "stats" command
 above); "cmd-peek-ready"/"cmd-peek-delayed"/"cmd-peek-buried" are
 unaffected by peek-tube calls.
 
-The stats-conn command returns introspection stats about the connection
-that sent it — the single most useful thing missing from stock's
-introspection commands, since stock has no notion of a connection as
-something a client can inspect at all. Its form is:
+The stats-conn command returns introspection stats about a connection —
+the single most useful thing missing from stock's introspection
+commands, since stock has no notion of a connection as something a
+client can inspect at all. Its form is:
 
-    stats-conn\r\n
+    stats-conn [id]\r\n
 
-Unlike stats-job/stats-tube, it takes no argument: it is always about the
-calling connection, so a client that has no other way to learn its own
-connection id (e.g. for correlating with list-connections, or with a log
-line elsewhere) can retrieve it here. The response is always:
+Unlike stats-job/stats-tube, its argument is optional. With no <id>, it
+reports on the calling connection itself, so a client that has no other
+way to learn its own connection id (e.g. for correlating with
+list-connections, or with a log line elsewhere) can retrieve it here.
+With <id> given, it reports on the connection with that id instead
+(matching the "id" field from list-connections or a stats-conn reply),
+letting one connection inspect another's stats directly instead of
+scanning list-connections for it.
+
+If <id> is given, the response is:
+
+    OK <bytes>\r\n
+    <data>\r\n
+
+or, if no connection with that id currently exists:
+
+    NOT_FOUND\r\n
+
+With no <id>, the response is always:
 
     OK <bytes>\r\n
     <data>\r\n
@@ -316,9 +331,10 @@ line elsewhere) can retrieve it here. The response is always:
  - "waiting" — "true" if the connection is currently blocked in a reserve
    call, else "false".
 
-There is no error case beyond the ones common to all commands (BAD_FORMAT,
-UNKNOWN_COMMAND). Increments the "cmd-stats-conn" stats counter (see the
-"stats" command above).
+Besides the ones common to all commands (BAD_FORMAT, UNKNOWN_COMMAND),
+the only error case is NOT_FOUND, when an <id> is given and no
+connection with that id currently exists. Increments the
+"cmd-stats-conn" stats counter (see the "stats" command above).
 
 The list-connections command returns the same fields as stats-conn for
 every currently connected client, answering questions stats-conn can't —

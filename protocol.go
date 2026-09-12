@@ -136,7 +136,7 @@ func (c *Conn) dispatchCmd(line string) {
 	case "stats-tube":
 		c.handleStatsTube(parts[1:])
 	case "stats-conn":
-		c.handleStatsConn()
+		c.handleStatsConn(parts[1:])
 	case "stats":
 		c.handleStats()
 	case "list-tubes":

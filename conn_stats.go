@@ -13,20 +13,48 @@ import (
 	"strings"
 )
 
-// handleStatsConn replies with introspection stats about the calling
-// connection itself: its id, remote address, used tube, watched tubes,
-// the ids of jobs it currently holds reserved, and its
-// producer/worker/waiting flags. Unlike stats-job/stats-tube it takes no
-// argument - it is always about the connection that sent it - so a
-// client that hasn't otherwise learned its own connection id (e.g. from
-// list-connections) can retrieve it here.
-func (c *Conn) handleStatsConn() {
+// handleStatsConn replies with introspection stats about a connection:
+// its id, remote address, used tube, watched tubes, the ids of jobs it
+// currently holds reserved, and its producer/worker/waiting flags.
+// Unlike stats-job/stats-tube its argument is optional - with none, it
+// reports on the connection that sent it, so a client that hasn't
+// otherwise learned its own connection id (e.g. from list-connections)
+// can retrieve it here. With an id argument, it reports on that
+// connection instead, replying NOT_FOUND if no connection with that id
+// exists.
+func (c *Conn) handleStatsConn(args []string) {
+	if len(args) > 1 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	target := c
+	var id uint64
+	haveID := len(args) == 1
+	if haveID {
+		var err error
+		id, err = strconv.ParseUint(args[0], 10, 64)
+		if err != nil {
+			c.replyWord("BAD_FORMAT\r\n")
+			return
+		}
+	}
+
 	c.Server.mu.Lock()
 	defer c.Server.mu.Unlock()
 
 	c.Server.globalStats.CmdStatsConn++
 
-	yaml := c.Server.formatConnStats(c)
+	if haveID {
+		var ok bool
+		target, ok = c.Server.conns[id]
+		if !ok {
+			c.replyWord("NOT_FOUND\r\n")
+			return
+		}
+	}
+
+	yaml := c.Server.formatConnStats(target)
 	c.sendYAML(yaml)
 }
 

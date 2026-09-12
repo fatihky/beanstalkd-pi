@@ -98,6 +98,58 @@ func TestStatsConnDefaults(t *testing.T) {
 	}
 }
 
+func TestStatsConnWithID(t *testing.T) {
+	addr := startTestServer(t)
+	c1 := dial(t, addr)
+	c2 := dial(t, addr)
+
+	c1.send("use tube-a")
+	c1.expect("USING tube-a")
+
+	// Learn c1's own connection id via its own no-arg stats-conn.
+	c1.send("stats-conn")
+	body1 := c1.readOK()
+	var id1 string
+	for _, line := range strings.Split(body1, "\n") {
+		if strings.HasPrefix(line, "id: ") {
+			id1 = strings.TrimPrefix(line, "id: ")
+		}
+	}
+	if id1 == "" {
+		t.Fatalf("stats-conn reply missing id, got:\n%s", body1)
+	}
+
+	// c2 asks about c1's connection by id and should see c1's stats, not
+	// its own.
+	c2.send("stats-conn " + id1)
+	body2 := c2.readOK()
+	if !strings.Contains(body2, "id: "+id1+"\n") {
+		t.Fatalf("expected id: %s, got:\n%s", id1, body2)
+	}
+	if !strings.Contains(body2, "tube: tube-a\n") {
+		t.Fatalf("expected tube: tube-a, got:\n%s", body2)
+	}
+}
+
+func TestStatsConnUnknownID(t *testing.T) {
+	addr := startTestServer(t)
+	c := dial(t, addr)
+
+	c.send("stats-conn 999999")
+	c.expect("NOT_FOUND")
+}
+
+func TestStatsConnBadFormat(t *testing.T) {
+	addr := startTestServer(t)
+	c := dial(t, addr)
+
+	c.send("stats-conn abc")
+	c.expect("BAD_FORMAT")
+
+	c.send("stats-conn 1 2")
+	c.expect("BAD_FORMAT")
+}
+
 func TestListConnectionsMultiple(t *testing.T) {
 	addr := startTestServer(t)
 	c1 := dial(t, addr)
