@@ -6,7 +6,7 @@ beanstalkd/doc/protocol.txt (git submodule, C reference implementation).
 Read that file first for the full protocol (error replies, every
 command's arguments and replies, stats keys, and so on); it applies to
 beanstalkd-pi unchanged except where noted below. This file only records
-where beanstalkd-pi's wire behavior diverges from it, plus the seven
+where beanstalkd-pi's wire behavior diverges from it, plus the eight
 extension commands that have no stock equivalent at all.
 
 Everything about this implementation that is not part of the wire
@@ -65,7 +65,7 @@ Error replies:
  - INTERNAL_ERROR is never sent; not part of this server's error
    vocabulary.
 
- - UNKNOWN_COMMAND: seven commands beyond stock's set are recognized
+ - UNKNOWN_COMMAND: eight commands beyond stock's set are recognized
    instead of producing this reply — see "Extension Commands" below.
 
 put:
@@ -95,6 +95,14 @@ release:
  - BURIED is never sent, for the same reason as OUT_OF_MEMORY above.
    release only ever answers RELEASED or NOT_FOUND.
 
+ - If the job's tube has dead-letter routing configured (see "set-dlq"
+   under "Extension Commands" below) and this release pushes its
+   release-plus-timeout count to the configured threshold, the job is
+   buried in the configured dead-letter tube instead of being re-queued
+   in its own tube. The reply is still RELEASED either way — from the
+   releasing client's point of view it released the job; where the job
+   ends up next is server-side routing, same as it always was.
+
 kick:
 
  - See also "kick-tube" under "Extension Commands" below, which applies
@@ -111,6 +119,21 @@ stats-job:
 
  - "file" is always 0. There is no binlog, so this field is present only
    for client parsers that expect the key to exist.
+
+ - "kicks" is immediately followed by "dlq-from-tube", an extra key with
+   no stock equivalent — see "set-dlq" under "Extension Commands" below.
+   It is the name of the tube this job was automatically dead-lettered
+   out of, or "" (empty) if that never happened. Stock clients ignore
+   unknown stats keys, so this is transparent to them.
+
+stats-tube:
+
+ - "pause-time-left" is immediately followed by "dlq-max-attempts" and
+   "dlq-tube", two extra keys with no stock equivalent — see "set-dlq"
+   under "Extension Commands" below. "dlq-max-attempts" is 0 when
+   dead-letter routing is disabled for this tube; "dlq-tube" is the
+   configured destination tube name, or "" (empty) when disabled. Stock
+   clients ignore unknown stats keys, so this is transparent to them.
 
 stats:
 
@@ -135,6 +158,14 @@ stats:
    "cmd-list-connections", an extra key with no stock equivalent — see
    "Extension Commands" below.
 
+ - "cmd-ping" is immediately followed by "cmd-set-dlq", an extra key with
+   no stock equivalent — see "Extension Commands" below.
+
+ - "job-timeouts" is immediately followed by "job-dead-lettered", an
+   extra key with no stock equivalent: the total number of jobs
+   automatically routed to a dead-letter tube by "set-dlq" (see
+   "Extension Commands" below).
+
  - All five binlog-* fields ("binlog-oldest-index",
    "binlog-current-index", "binlog-max-size", "binlog-records-written",
    "binlog-records-migrated") are hard-coded to 0. There is no binlog
@@ -145,7 +176,7 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The seven commands below have no equivalent in stock beanstalkd's protocol.
+The eight commands below have no equivalent in stock beanstalkd's protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
 shadow, a stock command; beanstalkd-pi recognizes them in addition to the
@@ -356,3 +387,70 @@ at all — the caller itself is always a connection, so it always includes
 at least one entry. There is no error case beyond the ones common to all
 commands (BAD_FORMAT, UNKNOWN_COMMAND). Increments the
 "cmd-list-connections" stats counter (see the "stats" command above).
+
+The set-dlq command configures automatic dead-letter routing for a tube:
+once a job in that tube has failed delivery (been released, or timed out
+on its TTR) enough times, it is buried in a separate tube instead of
+being handed back to workers again — the same idea as SQS's or RabbitMQ's
+dead-letter queue, adapted to reuse beanstalkd's existing "buried" state
+and existing tube-inspection commands (peek-tube, kick-tube, stats-tube,
+delete-tube) rather than adding a fifth job state or dedicated DLQ
+commands. Its form is:
+
+    set-dlq <tube> <max-attempts> <dead-tube>\r\n
+
+ - <tube> is a name at most 200 bytes, the tube to configure. Unlike
+   pause-tube/kick-tube/delete-tube/peek-tube, <tube> need not already
+   exist: like "use", it is created if missing, so DLQ policy can be set
+   up before any producer has touched the tube.
+
+ - <max-attempts> is an integer. 0 disables dead-letter routing for
+   <tube> (the default for every tube, and the prior behavior of this
+   server: a job can be released or time out any number of times and
+   always goes back to its own tube). A nonzero value is the number of
+   failed deliveries — releases plus TTR timeouts, added together — a job
+   must accumulate before it is dead-lettered.
+
+ - <dead-tube> is a name at most 200 bytes, the tube a job is buried into
+   once it crosses the threshold. It is validated but not required to
+   exist yet, and — deliberately, unlike <tube> — not created by this
+   command either: it only comes into existence once a job is actually
+   routed into it, so configuring DLQ policy that never fires never
+   clutters list-tubes with an empty tube. <dead-tube> may be the same as
+   <tube>, which degenerates into "bury this tube's job in place after
+   <max-attempts> failed deliveries" — a valid way to use this command
+   without a second tube at all. Ignored (but still validated) when
+   <max-attempts> is 0.
+
+A dead-lettered job is buried, not made ready, in <dead-tube> — exactly
+as if a worker on <dead-tube> had reserved and buried it — so it is
+recoverable with the same tools as any buried job (peek-tube <dead-tube>
+buried, stats-job, kick-tube <dead-tube> to make it reservable again,
+delete-tube <dead-tube> to discard it). Landing it buried rather than
+ready is also what keeps this mechanism from ever looping on its own:
+even a <dead-tube> that points back at <tube>, or a cycle across several
+tubes' DLQ configs, cannot re-trigger automatically, because a buried job
+only becomes reservable again via an explicit kick. Manual "bury" is
+unrelated and never triggers dead-letter routing — set-dlq only ever
+intercepts a job on its way back to Ready after release or a TTR timeout.
+
+Once dead-lettered, a job's "tube" (in stats-job) becomes <dead-tube>,
+and its release/timeout counts keep counting from where they left off; if
+<dead-tube> has its own set-dlq policy, a job kicked back to ready there
+and then released/timed out enough times is dead-lettered again under
+that policy, same as any other tube. stats-job gains a "dlq-from-tube"
+key naming the tube a job was routed out of (see "stats-job" above), and
+stats-tube gains "dlq-max-attempts"/"dlq-tube" keys reporting a tube's
+current configuration (see "stats-tube" above).
+
+Dead-letter configuration is in-memory only, exactly like pause-tube's
+pause state: it is not persisted, so it resets to disabled across a
+restart. A dead-lettered job's "dlq-from-tube" value on a job, unlike the
+tube configuration that produced it, is ordinary job state and is
+persisted/recovered like any other job field.
+
+The response is always "DLQ_SET\r\n". Besides the ones common to all
+commands (BAD_FORMAT, UNKNOWN_COMMAND), there is no error case — there is
+no NOT_FOUND, since <tube> is created rather than required to exist.
+Increments the "cmd-set-dlq" stats counter (see the "stats" command
+above).

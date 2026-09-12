@@ -47,6 +47,11 @@ type Job struct {
 	Tube        *Tube
 	Body        []byte
 
+	// DeadLetteredFrom is the name of the tube this job was automatically
+	// routed out of by checkDeadLetter (see server.go), or "" if it never
+	// happened. Purely informational, surfaced via stats-job.
+	DeadLetteredFrom string
+
 	// For buried list (doubly-linked)
 	buriedPrev *Job
 	buriedNext *Job

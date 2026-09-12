@@ -31,6 +31,12 @@ type Tube struct {
 	Pause     time.Duration
 	UnpauseAt time.Time
 
+	// Dead-letter routing (set-dlq extension command; see checkDeadLetter
+	// in server.go). MaxAttempts == 0 means disabled. Neither field is
+	// persisted - like Pause, it resets to disabled on restart.
+	MaxAttempts    uint32
+	DeadLetterTube string
+
 	// Tombstoned is set by delete-tube: the tube's ready, delayed, and
 	// buried jobs have already been purged, and any job still reserved
 	// by another connection at the time is dropped (not re-enqueued)

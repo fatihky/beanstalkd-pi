@@ -91,12 +91,16 @@ beanstalkd-pi -addr :11300                                       # no persistenc
 The server persists job state at these points:
 
 - **put** — after job is enqueued
-- **release** — after job is re-enqueued with new priority/delay
+- **release** — after job is re-enqueued with new priority/delay, or dead-lettered instead (see Dead-Letter Routing below)
 - **bury** — after job is moved to buried list
 - **kick / kick-job** — after job is moved back to ready
-- **tick** — when delayed jobs become ready
+- **tick** — when delayed jobs become ready, or when a reserved job's TTR expires and it is dead-lettered instead of going back to ready
 - **delete** — removes job from storage
 
 ### Recovery
 
 On startup, `LoadAllJobs()` is called after `Init()`. All returned jobs are re-enqueued into their respective tubes, and the job ID counter is advanced past the highest recovered ID.
+
+### Dead-Letter Routing
+
+The `set-dlq <tube> <max-attempts> <dead-tube>` extension command (see `protocol.txt`) configures a tube so that once a job has failed delivery (released or TTR-timed-out) `<max-attempts>` times, it's buried in `<dead-tube>` instead of going back to its own tube — reusing the existing buried state and tube-inspection commands (`peek-tube`, `kick-tube`, `stats-tube`) rather than adding a new job state. A dead-lettered job's origin tube is recorded on the job (`stats-job`'s `dlq-from-tube` key) and *is* persisted like any other job field, but a tube's DLQ configuration itself is in-memory only, like `pause-tube`'s pause state — it resets to disabled across a restart.

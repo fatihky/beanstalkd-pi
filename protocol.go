@@ -149,6 +149,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handleListConnections()
 	case "pause-tube":
 		c.handlePauseTube(parts[1:])
+	case "set-dlq":
+		c.handleSetDlq(parts[1:])
 	case "quit":
 		c.state = StateClose
 		return
@@ -733,6 +735,14 @@ func (c *Conn) handleRelease(args []string) {
 	j.Pri = uint32(pri)
 	j.Delay = time.Duration(delaySec) * time.Second
 	j.ReleaseCt++
+
+	if c.Server.checkDeadLetter(j) {
+		// Routed to the tube's dead-letter tube instead of back to t;
+		// from the client's point of view it still just released the
+		// job (see checkDeadLetter in server.go).
+		c.replyWord("RELEASED\r\n")
+		return
+	}
 
 	c.Server.enqueueJob(j)
 	c.Server.persistJob(j)
@@ -1369,6 +1379,53 @@ func (c *Conn) handlePauseTube(args []string) {
 	t.Stat.PauseTubeCt++
 
 	c.replyWord("PAUSED\r\n")
+}
+
+// handleSetDlq implements the "set-dlq" extension command: configures
+// automatic dead-letter routing for a tube (see checkDeadLetter in
+// server.go). Unlike pause-tube/kick-tube/delete-tube, <tube> need not
+// already exist - like "use", it is created if missing, so DLQ policy
+// can be set up before any producer has touched the tube. <dead-tube> is
+// validated but, deliberately, not created here: it only comes into
+// existence once a job is actually routed into it.
+func (c *Conn) handleSetDlq(args []string) {
+	if len(args) != 3 {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	name := args[0]
+	if !validTubeName(name) {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	maxAttempts, err := strconv.ParseUint(args[1], 10, 32)
+	if err != nil {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	deadTube := args[2]
+	if !validTubeName(deadTube) {
+		c.replyWord("BAD_FORMAT\r\n")
+		return
+	}
+
+	c.Server.mu.Lock()
+	defer c.Server.mu.Unlock()
+
+	c.Server.globalStats.CmdSetDlq++
+
+	t := c.Server.makeTube(name)
+	t.MaxAttempts = uint32(maxAttempts)
+	if t.MaxAttempts == 0 {
+		t.DeadLetterTube = ""
+	} else {
+		t.DeadLetterTube = deadTube
+	}
+
+	c.replyWord("DLQ_SET\r\n")
 }
 
 func (c *Conn) sendYAML(yaml string) {

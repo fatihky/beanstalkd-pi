@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -93,19 +94,37 @@ CREATE TABLE IF NOT EXISTS jobs (
 	body        BLOB NOT NULL
 );`
 
+// sqliteMigrations lists additive ALTER TABLE statements applied after
+// sqliteSchema, for columns introduced after the jobs table already
+// shipped. Each is idempotent: a "duplicate column name" error (the
+// column already exists, from a prior run) is ignored; any other error
+// fails Init.
+var sqliteMigrations = []string{
+	`ALTER TABLE jobs ADD COLUMN dead_lettered_from TEXT NOT NULL DEFAULT ''`,
+}
+
 const sqliteInsertSQL = `
 INSERT INTO jobs (id, pri, delay_ns, ttr_ns, body_size, created_at, deadline_at,
-	reserve_ct, timeout_ct, release_ct, bury_ct, kick_ct, state, tube_name, body)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	reserve_ct, timeout_ct, release_ct, bury_ct, kick_ct, state, tube_name, body,
+	dead_lettered_from)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(id) DO UPDATE SET
 	pri=excluded.pri, delay_ns=excluded.delay_ns, ttr_ns=excluded.ttr_ns,
 	body_size=excluded.body_size, created_at=excluded.created_at,
 	deadline_at=excluded.deadline_at, reserve_ct=excluded.reserve_ct,
 	timeout_ct=excluded.timeout_ct, release_ct=excluded.release_ct,
 	bury_ct=excluded.bury_ct, kick_ct=excluded.kick_ct, state=excluded.state,
-	tube_name=excluded.tube_name, body=excluded.body`
+	tube_name=excluded.tube_name, body=excluded.body,
+	dead_lettered_from=excluded.dead_lettered_from`
 
 const sqliteDeleteSQL = `DELETE FROM jobs WHERE id = ?`
+
+// isDuplicateColumnErr reports whether err is SQLite's "duplicate column
+// name" error, returned by ALTER TABLE ADD COLUMN when a migration in
+// sqliteMigrations has already been applied in a prior run.
+func isDuplicateColumnErr(err error) bool {
+	return strings.Contains(err.Error(), "duplicate column name")
+}
 
 // Init opens the database, applies the SSD-friendly PRAGMAs, creates the
 // schema if needed, and starts the background batch-flush loop.
@@ -137,6 +156,15 @@ func (p *SQLitePersistence) Init() error {
 	if _, err := db.Exec(sqliteSchema); err != nil {
 		db.Close()
 		return fmt.Errorf("sqlite schema: %w", err)
+	}
+
+	for _, migration := range sqliteMigrations {
+		if _, err := db.Exec(migration); err != nil {
+			if !isDuplicateColumnErr(err) {
+				db.Close()
+				return fmt.Errorf("sqlite migration: %w", err)
+			}
+		}
 	}
 
 	insertStmt, err := db.Prepare(sqliteInsertSQL)
@@ -246,6 +274,7 @@ func (p *SQLitePersistence) flush() error {
 				timeToNanos(j.CreatedAt), timeToNanos(j.DeadlineAt),
 				int64(j.ReserveCt), int64(j.TimeoutCt), int64(j.ReleaseCt),
 				int64(j.BuryCt), int64(j.KickCt), int64(j.State), j.TubeName, j.Body,
+				j.DeadLetteredFrom,
 			)
 		case sqliteOpDelete:
 			_, err = txDelete.Exec(int64(op.id))
@@ -268,7 +297,8 @@ func (p *SQLitePersistence) Sync() error {
 func (p *SQLitePersistence) LoadAllJobs() ([]*PersistedJob, error) {
 	rows, err := p.db.Query(`
 SELECT id, pri, delay_ns, ttr_ns, body_size, created_at, deadline_at,
-	reserve_ct, timeout_ct, release_ct, bury_ct, kick_ct, state, tube_name, body
+	reserve_ct, timeout_ct, release_ct, bury_ct, kick_ct, state, tube_name, body,
+	dead_lettered_from
 FROM jobs`)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite load: %w", err)
@@ -282,7 +312,7 @@ FROM jobs`)
 		if err := rows.Scan(
 			&j.ID, &j.Pri, &delayNs, &ttrNs, &j.BodySize, &createdAt, &deadlineAt,
 			&j.ReserveCt, &j.TimeoutCt, &j.ReleaseCt, &j.BuryCt, &j.KickCt,
-			&j.State, &j.TubeName, &j.Body,
+			&j.State, &j.TubeName, &j.Body, &j.DeadLetteredFrom,
 		); err != nil {
 			return nil, fmt.Errorf("sqlite scan: %w", err)
 		}

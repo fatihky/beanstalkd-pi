@@ -20,6 +20,9 @@ type PersistedJob struct {
 	State      byte
 	TubeName   string
 	Body       []byte
+
+	// DeadLetteredFrom mirrors Job.DeadLetteredFrom.
+	DeadLetteredFrom string
 }
 
 // Persistence defines the port for job persistence operations.
@@ -54,21 +57,22 @@ func ToPersistedJob(j *Job) *PersistedJob {
 	copy(body, j.Body)
 
 	return &PersistedJob{
-		ID:         j.ID,
-		Pri:        j.Pri,
-		Delay:      j.Delay,
-		TTR:        j.TTR,
-		BodySize:   j.BodySize,
-		CreatedAt:  j.CreatedAt,
-		DeadlineAt: j.DeadlineAt,
-		ReserveCt:  j.ReserveCt,
-		TimeoutCt:  j.TimeoutCt,
-		ReleaseCt:  j.ReleaseCt,
-		BuryCt:     j.BuryCt,
-		KickCt:     j.KickCt,
-		State:      j.State,
-		TubeName:   tubeName,
-		Body:       body,
+		ID:               j.ID,
+		Pri:              j.Pri,
+		Delay:            j.Delay,
+		TTR:              j.TTR,
+		BodySize:         j.BodySize,
+		CreatedAt:        j.CreatedAt,
+		DeadlineAt:       j.DeadlineAt,
+		ReserveCt:        j.ReserveCt,
+		TimeoutCt:        j.TimeoutCt,
+		ReleaseCt:        j.ReleaseCt,
+		BuryCt:           j.BuryCt,
+		KickCt:           j.KickCt,
+		State:            j.State,
+		TubeName:         tubeName,
+		Body:             body,
+		DeadLetteredFrom: j.DeadLetteredFrom,
 	}
 }
 
@@ -79,20 +83,21 @@ func fromPersistedJob(pj *PersistedJob) *Job {
 	copy(body, pj.Body)
 
 	return &Job{
-		ID:         pj.ID,
-		Pri:        pj.Pri,
-		Delay:      pj.Delay,
-		TTR:        pj.TTR,
-		BodySize:   pj.BodySize,
-		CreatedAt:  pj.CreatedAt,
-		DeadlineAt: pj.DeadlineAt,
-		ReserveCt:  pj.ReserveCt,
-		TimeoutCt:  pj.TimeoutCt,
-		ReleaseCt:  pj.ReleaseCt,
-		BuryCt:     pj.BuryCt,
-		KickCt:     pj.KickCt,
-		State:      pj.State,
-		Tube:       &Tube{Name: pj.TubeName},
-		Body:       body,
+		ID:               pj.ID,
+		Pri:              pj.Pri,
+		Delay:            pj.Delay,
+		TTR:              pj.TTR,
+		BodySize:         pj.BodySize,
+		CreatedAt:        pj.CreatedAt,
+		DeadlineAt:       pj.DeadlineAt,
+		ReserveCt:        pj.ReserveCt,
+		TimeoutCt:        pj.TimeoutCt,
+		ReleaseCt:        pj.ReleaseCt,
+		BuryCt:           pj.BuryCt,
+		KickCt:           pj.KickCt,
+		State:            pj.State,
+		Tube:             &Tube{Name: pj.TubeName},
+		Body:             body,
+		DeadLetteredFrom: pj.DeadLetteredFrom,
 	}
 }

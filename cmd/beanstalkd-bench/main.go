@@ -50,6 +50,7 @@ type config struct {
 	mode           string
 	reserveTimeout time.Duration
 	drainTimeout   time.Duration
+	idleConns      int
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -66,9 +67,10 @@ func parseFlags(args []string) (*config, error) {
 	fs.UintVar(&cfg.priority, "priority", 1024, "job priority (0 is most urgent)")
 	fs.DurationVar(&cfg.ttr, "ttr", 60*time.Second, "job time-to-run")
 	fs.DurationVar(&cfg.delay, "delay", 0, "delay before a put job becomes ready")
-	fs.StringVar(&cfg.mode, "mode", "both", "what to run: \"both\" (put and reserve/delete), \"put\", or \"reserve\"")
+	fs.StringVar(&cfg.mode, "mode", "both", "what to run: \"both\" (put and reserve/delete), \"put\", \"reserve\", or \"idle\" (hold -idle-conns open with no job traffic, until -duration elapses or Ctrl-C)")
 	fs.DurationVar(&cfg.reserveTimeout, "reserve-timeout", 1*time.Second, "per-RESERVE timeout used by consumers while polling for jobs; also bounds how long a consumer can take to notice shutdown while idle")
 	fs.DurationVar(&cfg.drainTimeout, "drain-timeout", 30*time.Second, "max time consumers keep reserving to reach -n jobs: after producers finish (both mode), or from the start (reserve mode)")
+	fs.IntVar(&cfg.idleConns, "idle-conns", 0, "additional connections to open and hold idle (connected, watching only \"default\", never reserving) for the duration of the run — layer this on any -mode to see the server's per-connection CPU/memory overhead under many concurrent clients; with -mode idle these are the only connections opened")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}
@@ -83,9 +85,9 @@ func parseFlags(args []string) (*config, error) {
 	})
 
 	switch cfg.mode {
-	case "both", "put", "reserve":
+	case "both", "put", "reserve", "idle":
 	default:
-		return nil, fmt.Errorf("invalid -mode %q: must be \"both\", \"put\", or \"reserve\"", cfg.mode)
+		return nil, fmt.Errorf("invalid -mode %q: must be \"both\", \"put\", \"reserve\", or \"idle\"", cfg.mode)
 	}
 	for _, t := range strings.Split(tubeFlag, ",") {
 		t = strings.TrimSpace(t)
@@ -110,14 +112,21 @@ func parseFlags(args []string) (*config, error) {
 	if cfg.bodySize < 8 {
 		cfg.bodySize = 8
 	}
-	if cfg.mode != "reserve" && cfg.producers < 1 {
+	if (cfg.mode == "both" || cfg.mode == "put") && cfg.producers < 1 {
 		return nil, errors.New("-producers must be >= 1")
 	}
-	if cfg.mode != "put" && cfg.consumers < 1 {
+	if (cfg.mode == "both" || cfg.mode == "reserve") && cfg.consumers < 1 {
 		return nil, errors.New("-consumers must be >= 1")
 	}
-	if cfg.duration <= 0 && cfg.numJobs <= 0 {
+	if cfg.mode == "idle" {
+		if cfg.idleConns < 1 {
+			return nil, errors.New("-mode idle requires -idle-conns >= 1")
+		}
+	} else if cfg.duration <= 0 && cfg.numJobs <= 0 {
 		return nil, errors.New("-n must be >= 1 when -duration is not set")
+	}
+	if cfg.idleConns < 0 {
+		return nil, errors.New("-idle-conns must be >= 0")
 	}
 	return cfg, nil
 }
@@ -130,6 +139,8 @@ type stats struct {
 	deleteCount int64
 	deleteErr   int64
 	reserveErr  int64
+	idleConnOK  int64
+	idleConnErr int64
 }
 
 func run(cfg *config) error {
@@ -157,8 +168,16 @@ func run(cfg *config) error {
 	st := &stats{}
 	var wg sync.WaitGroup
 
-	runProducers := cfg.mode != "reserve"
-	runConsumers := cfg.mode != "put"
+	runProducers := cfg.mode == "both" || cfg.mode == "put"
+	runConsumers := cfg.mode == "both" || cfg.mode == "reserve"
+
+	if cfg.idleConns > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			runIdleConns(ctx, cfg, st)
+		}()
+	}
 
 	putLat := make([][]time.Duration, 0)
 	e2eLat := make([][]time.Duration, 0)
@@ -217,11 +236,16 @@ func run(cfg *config) error {
 	// consumers have caught up or the drain timeout elapses. In "put" mode
 	// there are no consumers to wait for, so stop as soon as producers
 	// finish. "reserve" mode and any -duration run stop via ctx above.
+	// "idle" mode has no producers/consumers at all: it just holds
+	// -idle-conns open until -duration elapses or the user hits Ctrl-C.
 	if cfg.duration <= 0 {
 		<-producersDone
-		if cfg.mode == "put" {
+		switch cfg.mode {
+		case "put":
 			cancel()
-		} else {
+		case "idle":
+			<-ctx.Done()
+		default:
 			target := int64(cfg.numJobs)
 			deadline := time.After(cfg.drainTimeout)
 		drain:
@@ -346,6 +370,31 @@ func runConsumer(ctx context.Context, cfg *config, st *stats) (e2e, del []time.D
 	}
 }
 
+// runIdleConns dials cfg.idleConns connections concurrently and holds each
+// one open — connected, watching only the default tube, never putting or
+// reserving — until ctx is done. It exists to isolate the server's
+// per-connection overhead (goroutine + Conn bookkeeping) from any put/
+// reserve traffic, so -idle-conns can be layered on any -mode or used
+// alone via -mode idle.
+func runIdleConns(ctx context.Context, cfg *config, st *stats) {
+	var wg sync.WaitGroup
+	wg.Add(cfg.idleConns)
+	for i := 0; i < cfg.idleConns; i++ {
+		go func() {
+			defer wg.Done()
+			conn, err := beanstalk.Dial("tcp", cfg.addr)
+			if err != nil {
+				atomic.AddInt64(&st.idleConnErr, 1)
+				return
+			}
+			defer conn.Close()
+			atomic.AddInt64(&st.idleConnOK, 1)
+			<-ctx.Done()
+		}()
+	}
+	wg.Wait()
+}
+
 func flatten(chunks [][]time.Duration) []time.Duration {
 	n := 0
 	for _, c := range chunks {
@@ -362,10 +411,10 @@ func report(cfg *config, st *stats, elapsed time.Duration, putLat, e2eLat, delLa
 	fmt.Printf("beanstalkd-bench: %s tubes=%s mode=%s producers=%d consumers=%d body=%dB elapsed=%s\n\n",
 		cfg.addr, strings.Join(cfg.tubes, ","), cfg.mode, cfg.producers, cfg.consumers, cfg.bodySize, elapsed.Round(time.Millisecond))
 
-	if cfg.mode != "reserve" {
+	if cfg.mode == "both" || cfg.mode == "put" {
 		printSection("PUT", st.putCount, st.putErr, elapsed, putLat)
 	}
-	if cfg.mode != "put" {
+	if cfg.mode == "both" || cfg.mode == "reserve" {
 		printSection("DELETE", st.deleteCount, st.deleteErr, elapsed, delLat)
 		if len(e2eLat) > 0 {
 			printLatencyOnly("END-TO-END (put → reserve)", e2eLat)
@@ -373,6 +422,9 @@ func report(cfg *config, st *stats, elapsed time.Duration, putLat, e2eLat, delLa
 		if st.reserveErr > 0 {
 			fmt.Printf("reserve errors: %d\n\n", st.reserveErr)
 		}
+	}
+	if cfg.idleConns > 0 {
+		fmt.Printf("IDLE CONNS: %d held, %d failed to connect\n\n", st.idleConnOK, st.idleConnErr)
 	}
 }
 

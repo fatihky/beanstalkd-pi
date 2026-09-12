@@ -113,6 +113,7 @@ func cmdCounters(gs GlobalStats) []struct {
 		{"list_tubes_watched", gs.CmdListTubesWatched},
 		{"pause_tube", gs.CmdPauseTube},
 		{"ping", gs.CmdPing},
+		{"set_dlq", gs.CmdSetDlq},
 	}
 }
 
@@ -147,6 +148,10 @@ func writeMetrics(w io.Writer, snap statsSnapshot) {
 	fmt.Fprintf(w, "# HELP beanstalkd_job_timeouts_total Total number of reserved jobs that timed out (TTR expired).\n")
 	fmt.Fprintf(w, "# TYPE beanstalkd_job_timeouts_total counter\n")
 	fmt.Fprintf(w, "beanstalkd_job_timeouts_total %d\n", snap.global.JobTimeouts)
+
+	fmt.Fprintf(w, "# HELP beanstalkd_jobs_dead_lettered_total Total number of jobs automatically routed to a dead-letter tube (set-dlq).\n")
+	fmt.Fprintf(w, "# TYPE beanstalkd_jobs_dead_lettered_total counter\n")
+	fmt.Fprintf(w, "beanstalkd_jobs_dead_lettered_total %d\n", snap.global.JobsDeadLettered)
 
 	// Connection gauges.
 	fmt.Fprintf(w, "# HELP beanstalkd_connections Current number of connections, by role.\n")

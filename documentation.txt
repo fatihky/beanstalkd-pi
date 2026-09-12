@@ -48,6 +48,20 @@ Build/run the benchmark tool (a separate "main" package under cmd/):
     go build -o beanstalkd-bench ./cmd/beanstalkd-bench
     ./beanstalkd-bench -addr 127.0.0.1:11300 -mode both -n 10000
 
+It also doubles as a load-testing tool for watching resource usage
+against the observability server's /metrics (section 7): "-mode put"
+with a large -n bulk-loads jobs without reserving them, so they stay
+resident to measure memory usage under a large ready queue, e.g.
+
+    ./beanstalkd-bench -addr 127.0.0.1:11300 -mode put -n 1000000 -producers 8
+
+and "-idle-conns N" (layered on any -mode, or alone via "-mode idle")
+opens N additional connections and holds them open with no job traffic,
+to isolate the server's per-connection CPU/memory overhead under many
+concurrent clients, e.g.
+
+    ./beanstalkd-bench -addr 127.0.0.1:11300 -mode idle -idle-conns 5000 -duration 5m
+
 Run the whole test suite:
 
     go test .
@@ -265,15 +279,39 @@ Built-in adapters:
 Persistence hooks — the server persists job state at these points:
 
  - put / put-at — after the job is enqueued.
- - release — after the job is re-enqueued with new priority/delay.
+ - release — after the job is re-enqueued with new priority/delay, or
+   after it is dead-lettered instead (see "Dead-letter routing" below).
  - bury — after the job is moved to the buried list.
  - kick / kick-job — after the job is moved back to ready.
- - tick — when a delayed job becomes ready.
+ - tick — when a delayed job becomes ready, or when a reserved job's TTR
+   expires and it is dead-lettered instead of going back to ready.
  - delete — removes the job from storage.
 
 Recovery: on startup, LoadAllJobs() is called after Init(). All returned
 jobs are re-enqueued into their respective tubes, and the job ID counter
 is advanced past the highest recovered ID.
+
+Dead-letter routing (set-dlq extension command; see protocol.txt for the
+wire form and checkDeadLetter in server.go for the implementation): each
+Tube optionally carries a MaxAttempts threshold and a DeadLetterTube
+name, set via "set-dlq". Once a job's release-plus-timeout count reaches
+that threshold — checked at the two points a job would otherwise return
+to Ready after being reserved, namely handleRelease and the TTR-expiry
+branch of tick (via dropOrReenqueue) — it is buried in the configured
+dead-letter tube instead, carrying its origin tube name in
+Job.DeadLetteredFrom for introspection (stats-job's "dlq-from-tube" key).
+A connection disconnecting while holding a reserved job (Conn.
+reenqueueReservedJobs) deliberately does *not* go through this check and
+does not count toward the threshold, to avoid changing the meaning of
+the stock-compatible per-job "timeouts" counter (TTR timeout only); a
+crashing worker is therefore not currently caught by dead-letter routing,
+only an explicit release or an actual TTR expiry.
+
+Unlike job state, a tube's DLQ configuration (MaxAttempts/DeadLetterTube)
+is not persisted — like Pause/UnpauseAt, it resets to disabled on
+restart, since there is no tube-level persistence table, only a
+job-level one. An operator relying on it should reissue "set-dlq" as
+part of startup automation after a restart.
 
 Implementing a custom adapter: create a new persistence_*.go file,
 implement all Persistence methods, and use ToPersistedJob(*Job) to
@@ -341,12 +379,14 @@ itself. beanstalkd-pi additionally starts a plain net/http server
     - beanstalkd_up, beanstalkd_uptime_seconds, beanstalkd_draining
     - beanstalkd_jobs{state=...} (ready/urgent/reserved/delayed/buried),
       global and per-tube (beanstalkd_tube_jobs{tube=...,state=...})
-    - beanstalkd_jobs_total, beanstalkd_job_timeouts_total
+    - beanstalkd_jobs_total, beanstalkd_job_timeouts_total,
+      beanstalkd_jobs_dead_lettered_total (set-dlq; see the "Dead-letter
+      routing" section above)
     - beanstalkd_connections{role=...} (current/producers/workers/waiting),
       beanstalkd_connections_total
     - beanstalkd_tubes_current
     - beanstalkd_commands_total{command=...} — one series per wire command,
-      including the beanstalkd-pi extensions (kick_tube, ping)
+      including the beanstalkd-pi extensions (kick_tube, ping, set_dlq)
     - beanstalkd_tube_connections{tube=...,role=...} (using/watching/waiting)
     - beanstalkd_tube_paused{tube=...}
     - beanstalkd_tube_jobs_total{tube=...}, beanstalkd_tube_deletes_total{tube=...}

@@ -56,7 +56,9 @@ type GlobalStats struct {
 	CmdReserveJob         uint64
 	CmdKickJob            uint64
 	CmdPing               uint64
+	CmdSetDlq             uint64
 	JobTimeouts           uint64
+	JobsDeadLettered      uint64
 	TotalJobs             uint64
 	TotalConnections      uint64
 }
@@ -550,6 +552,43 @@ func (s *Server) purgeTube(t *Tube) int {
 // delete-tube, in which case the job is deleted instead of resurrecting
 // the tube. Caller must hold s.mu and must not have touched
 // t.Stat.ReservedCt/s.reservedCt yet.
+// checkDeadLetter routes j into its tube's configured dead-letter tube,
+// burying it there, once its failed-delivery count (releases plus TTR
+// timeouts - every disposition that sends a reserved job back around
+// instead of finishing it) reaches the tube's configured threshold (see
+// the "set-dlq" extension command in protocol.txt). Landing the job
+// buried rather than ready is deliberate: it makes automatic dead-letter
+// routing incapable of looping on its own even if a dead-letter tube is
+// configured to point back at itself or at a cycle of tubes, since a
+// buried job only becomes reservable again via an explicit kick.
+//
+// Returns true if j was routed - the caller must not re-enqueue j itself
+// in that case, since j.Tube now points at the dead-letter tube.
+// Manual "bury" never goes through this; it is an explicit, unrelated
+// terminal decision by the worker. Caller must hold s.mu and must have
+// already removed j from the reserved-job bookkeeping.
+func (s *Server) checkDeadLetter(j *Job) bool {
+	t := j.Tube
+	if t == nil || t.MaxAttempts == 0 || t.DeadLetterTube == "" {
+		return false
+	}
+	if j.ReleaseCt+j.TimeoutCt < t.MaxAttempts {
+		return false
+	}
+
+	dead := s.makeTube(t.DeadLetterTube)
+	j.DeadLetteredFrom = t.Name
+	j.Tube = dead
+	j.State = StateBuried
+	j.DeadlineAt = time.Time{}
+	dead.buryPush(j)
+	dead.Stat.BuriedCt++
+	s.buriedCt++
+	s.globalStats.JobsDeadLettered++
+	s.persistJob(j)
+	return true
+}
+
 func (s *Server) dropOrReenqueue(j *Job) {
 	t := j.Tube
 	if t == nil {
@@ -561,6 +600,10 @@ func (s *Server) dropOrReenqueue(j *Job) {
 	if t.Tombstoned {
 		s.finishDeleteJob(j)
 		s.gcTube(t)
+		return
+	}
+
+	if s.checkDeadLetter(j) {
 		return
 	}
 
@@ -658,7 +701,9 @@ cmd-list-tubes-watched: %d
 cmd-list-connections: %d
 cmd-pause-tube: %d
 cmd-ping: %d
+cmd-set-dlq: %d
 job-timeouts: %d
+job-dead-lettered: %d
 total-jobs: %d
 max-job-size: %d
 current-tubes: %d
@@ -717,7 +762,9 @@ platform: %s
 		gs.CmdListConnections,
 		gs.CmdPauseTube,
 		gs.CmdPing,
+		gs.CmdSetDlq,
 		gs.JobTimeouts,
+		gs.JobsDeadLettered,
 		gs.TotalJobs,
 		s.maxJobSize,
 		len(s.tubes),
@@ -763,6 +810,8 @@ pause: %d
 cmd-delete: %d
 cmd-pause-tube: %d
 pause-time-left: %d
+dlq-max-attempts: %d
+dlq-tube: %s
 `,
 		t.Name,
 		t.Stat.UrgentCt,
@@ -778,6 +827,8 @@ pause-time-left: %d
 		t.Stat.DeleteCt,
 		t.Stat.PauseTubeCt,
 		pauseTimeLeft,
+		t.MaxAttempts,
+		t.DeadLetterTube,
 	)
 }
 
@@ -810,6 +861,7 @@ timeouts: %d
 releases: %d
 buries: %d
 kicks: %d
+dlq-from-tube: %s
 `,
 		j.ID,
 		tubeName,
@@ -824,6 +876,7 @@ kicks: %d
 		j.ReleaseCt,
 		j.BuryCt,
 		j.KickCt,
+		j.DeadLetteredFrom,
 	)
 }
 
