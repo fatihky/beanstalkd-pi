@@ -335,6 +335,16 @@ func (s *Server) tickLoop() {
 	}
 }
 
+// tick runs every 100ms to promote delayed jobs to ready and expire
+// TTRs - the two state transitions that are inherently time-based
+// rather than triggered by a client command, so nothing else drives
+// them. It used to also be what satisfied a blocked reserve (polling
+// every waiting connection for DEADLINE_SOON/TIMED_OUT/a ready job on
+// every pass), which added up to 100ms of latency to any reserve that
+// had to block; that's now handled immediately wherever a job actually
+// turns Ready (see wakeWaitersForTube) and by each blocked reserve's
+// own precise timer (see Conn.checkWait), so tick no longer touches
+// waiting connections at all.
 func (s *Server) tick(now time.Time) {
 	unlock := s.lockTraced("tick")
 	defer unlock()
@@ -358,10 +368,12 @@ func (s *Server) tick(now time.Time) {
 				s.globalUrgentCt++
 			}
 			s.persistJob(j)
+			s.wakeWaitersForTube(t)
 		}
 
 		if t.Pause != 0 && !now.Before(t.UnpauseAt) {
 			t.Pause = 0
+			s.wakeWaitersForTube(t)
 		}
 	}
 
@@ -377,43 +389,18 @@ func (s *Server) tick(now time.Time) {
 			j = next
 		}
 	}
+}
 
-	for _, c := range s.conns {
-		if !c.isWaiting {
-			continue
-		}
-
-		if c.hasDeadlineSoon(now) && !c.hasReadyJobLocked() {
-			c.isWaiting = false
-			s.waiting--
-			for t := range c.WatchMap {
-				t.Stat.WaitingCt--
-			}
-			c.state = StateWantCommand
-			go c.replyWord("DEADLINE_SOON\r\n")
-			continue
-		}
-
-		if c.hasTimeout && time.Now().After(c.timeoutAt) {
-			c.isWaiting = false
-			s.waiting--
-			for t := range c.WatchMap {
-				t.Stat.WaitingCt--
-			}
-			c.hasTimeout = false
-			c.state = StateWantCommand
-			go c.replyWord("TIMED_OUT\r\n")
-			continue
-		}
-
-		if j := s.findJobForConn(c); j != nil {
-			c.isWaiting = false
-			s.waiting--
-			for t := range c.WatchMap {
-				t.Stat.WaitingCt--
-			}
-			go c.sendReservedJob(j)
-		}
+// wakeWaitersForTube nudges every connection currently blocked in
+// reserve that watches t to re-check its condition immediately, rather
+// than waiting for tick's next pass. Called wherever a job in t
+// transitions to Ready (put/put-at, release, a delayed job's delay
+// elapsing, kick/kick-job/kick-tube, a TTR expiry's re-enqueue, a
+// connection close re-enqueueing its reserved jobs) or wherever a
+// paused tube reopens. Caller must hold s.mu.
+func (s *Server) wakeWaitersForTube(t *Tube) {
+	for _, c := range t.WaitingConns {
+		c.wake()
 	}
 }
 
@@ -585,6 +572,7 @@ func (s *Server) dropOrReenqueue(j *Job) {
 		t.Stat.UrgentCt++
 		s.globalUrgentCt++
 	}
+	s.wakeWaitersForTube(t)
 }
 
 func (s *Server) enqueueJob(j *Job) {
@@ -619,6 +607,7 @@ func (s *Server) enqueueJob(j *Job) {
 			t.Stat.UrgentCt++
 			s.globalUrgentCt++
 		}
+		s.wakeWaitersForTube(t)
 	}
 }
 

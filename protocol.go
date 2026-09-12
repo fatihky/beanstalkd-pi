@@ -70,10 +70,6 @@ func (c *Conn) serve() {
 				c.state = StateWantCommand
 			}
 
-		case StateWait:
-			time.Sleep(5 * time.Millisecond)
-			continue
-
 		case StateClose:
 			return
 
@@ -382,20 +378,28 @@ func (c *Conn) handleReserveWithTimeout(args []string) {
 	}
 }
 
+// doReserve handles both "reserve" (timeout < 0, blocks indefinitely)
+// and "reserve-with-timeout" with a positive timeout. If a job is
+// available right away it's returned synchronously, same as before;
+// otherwise it registers c as waiting and blocks c's own connection
+// goroutine in waitForReserve until a job turns up, DEADLINE_SOON
+// applies, or the timeout elapses - see waitForReserve for how that's
+// now event-driven rather than polled from tick.
 func (c *Conn) doReserve(timeout time.Duration) {
 	start := time.Now()
-	now := start
 
 	unlock := c.Server.lockTraced("reserve")
-	defer unlock()
-	defer c.traceReserve(start, "reserve")
 
-	if c.hasDeadlineSoon(now) && !c.hasReadyJobLocked() {
+	if c.hasDeadlineSoon(start) && !c.hasReadyJobLocked() {
+		unlock()
+		c.traceReserve(start, "reserve")
 		c.replyWord("DEADLINE_SOON\r\n")
 		return
 	}
 
 	if j := c.Server.findJobForConn(c); j != nil {
+		unlock()
+		c.traceReserve(start, "reserve")
 		c.sendReservedJob(j)
 		return
 	}
@@ -405,13 +409,134 @@ func (c *Conn) doReserve(timeout time.Duration) {
 	for t := range c.WatchMap {
 		t.Stat.WaitingCt++
 	}
+	c.registerWaiting()
 
-	if timeout >= 0 {
-		c.hasTimeout = true
+	c.hasTimeout = timeout >= 0
+	if c.hasTimeout {
 		c.timeoutAt = time.Now().Add(timeout)
 	}
 
-	c.state = StateWait
+	unlock()
+	c.traceReserve(start, "reserve")
+
+	c.waitForReserve()
+}
+
+// clearWaitingLocked ends c's blocked-reserve bookkeeping - the inverse
+// of the isWaiting/waiting/WaitingCt/registerWaiting bump doReserve
+// makes when it starts blocking. Caller must hold Server.mu.
+func (c *Conn) clearWaitingLocked() {
+	c.isWaiting = false
+	c.Server.waiting--
+	for t := range c.WatchMap {
+		t.Stat.WaitingCt--
+	}
+	c.unregisterWaiting()
+	c.hasTimeout = false
+}
+
+// checkWait re-examines a blocked reserve's condition under Server.mu,
+// in the same priority tick() used to poll in: DEADLINE_SOON, then
+// TIMED_OUT, then a ready job. As soon as one applies it clears c's
+// waiting state and reports it as resolved for waitForReserve to reply
+// to. If none apply yet, it instead reports the next wall-clock instant
+// (if any) at which DEADLINE_SOON or the reserve timeout would apply,
+// so waitForReserve can set a precise timer rather than poll; a job
+// turning Ready is not time-based, so that outcome relies entirely on
+// wake() being called wherever it happens (see wakeWaitersForTube).
+func (c *Conn) checkWait() (job *Job, reply string, resolved bool, deadline time.Time, hasDeadline bool) {
+	unlock := c.Server.lockTraced("reserve-wait")
+	defer unlock()
+
+	if !c.isWaiting {
+		// Already resolved elsewhere - shouldn't normally happen since
+		// only this goroutine clears its own waiting state, but this
+		// guards against resolving twice rather than assuming it can't.
+		resolved = true
+		return
+	}
+
+	now := time.Now()
+
+	if c.hasDeadlineSoon(now) && !c.hasReadyJobLocked() {
+		c.clearWaitingLocked()
+		reply = "DEADLINE_SOON\r\n"
+		resolved = true
+		return
+	}
+
+	if c.hasTimeout && !now.Before(c.timeoutAt) {
+		c.clearWaitingLocked()
+		reply = "TIMED_OUT\r\n"
+		resolved = true
+		return
+	}
+
+	if j := c.Server.findJobForConn(c); j != nil {
+		c.clearWaitingLocked()
+		job = j
+		resolved = true
+		return
+	}
+
+	if sj := c.getSoonestJob(); sj != nil {
+		deadline = sj.DeadlineAt.Add(-safetyMargin)
+		hasDeadline = true
+	}
+	if c.hasTimeout && (!hasDeadline || c.timeoutAt.Before(deadline)) {
+		deadline = c.timeoutAt
+		hasDeadline = true
+	}
+	return
+}
+
+// waitForReserve blocks c's own connection goroutine - without holding
+// Server.mu - until checkWait resolves it: a job becomes available, a
+// DEADLINE_SOON condition applies, or the reserve timeout elapses. Only
+// the latter two are purely time-based, so it sets a timer for exactly
+// checkWait's reported deadline (not a fixed poll interval) to cover
+// them precisely; a job turning Ready instead relies on being woken via
+// wakeCh, signaled by wake() at every site a job in a watched tube
+// turns Ready. Before this, all three outcomes were only ever noticed
+// on tick's next 100ms pass, adding up to 100ms of latency to every
+// reserve that had to block.
+func (c *Conn) waitForReserve() {
+	for {
+		job, reply, resolved, deadline, hasDeadline := c.checkWait()
+		if resolved {
+			switch {
+			case job != nil:
+				c.sendReservedJob(job)
+			case reply != "":
+				c.replyWord(reply)
+			}
+			return
+		}
+
+		var timerC <-chan time.Time
+		var timer *time.Timer
+		if hasDeadline {
+			d := time.Until(deadline)
+			if d < 0 {
+				d = 0
+			}
+			timer = time.NewTimer(d)
+			timerC = timer.C
+		}
+
+		select {
+		case <-c.wakeCh:
+		case <-timerC:
+		case <-c.Server.closeCh:
+			if timer != nil {
+				timer.Stop()
+			}
+			return
+		}
+		if timer != nil {
+			timer.Stop()
+		}
+	}
 }
 
 func (c *Conn) doReserveImmediate() {
@@ -948,6 +1073,10 @@ func (s *Server) kickTube(t *Tube, bound int) int {
 		}
 	}
 
+	if kicked > 0 {
+		s.wakeWaitersForTube(t)
+	}
+
 	return kicked
 }
 
@@ -1093,6 +1222,7 @@ func (c *Conn) handleKickJob(args []string) {
 		j.Tube.Stat.UrgentCt++
 		c.Server.globalUrgentCt++
 	}
+	c.Server.wakeWaitersForTube(j.Tube)
 
 	c.Server.persistJob(j)
 	c.replyWord("KICKED\r\n")

@@ -102,6 +102,28 @@ func (t *Tube) buriedLen() int {
 	return count
 }
 
+// addWaiter and removeWaiter maintain WaitingConns, the set of
+// connections currently blocked in reserve watching t - consulted by
+// Server.wakeWaitersForTube wherever a job in t turns Ready, so a
+// blocked reserve is satisfied immediately instead of on tick's next
+// 100ms pass. Order doesn't matter, so removeWaiter swaps in the last
+// element rather than shifting. Caller must hold Server.mu.
+func (t *Tube) addWaiter(c *Conn) {
+	t.WaitingConns = append(t.WaitingConns, c)
+}
+
+func (t *Tube) removeWaiter(c *Conn) {
+	for i, wc := range t.WaitingConns {
+		if wc == c {
+			last := len(t.WaitingConns) - 1
+			t.WaitingConns[i] = t.WaitingConns[last]
+			t.WaitingConns[last] = nil
+			t.WaitingConns = t.WaitingConns[:last]
+			return
+		}
+	}
+}
+
 func (t *Tube) isPaused(now time.Time) bool {
 	if t.Pause == 0 {
 		return false

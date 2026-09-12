@@ -121,35 +121,65 @@ single-threaded, libevent-driven reactor: one event loop multiplexes all
 connections, and there is no locking because there is no concurrency.
 
 A separate goroutine (tickLoop, server.go: tick, 100ms period) promotes
-delayed jobs to ready, expires TTRs, fires DEADLINE_SOON/TIMED_OUT, and
-satisfies blocked reserve calls — the polling equivalent of stock's
-timer-heap-driven event callbacks.
+delayed jobs to ready and expires TTRs — the two job-state transitions
+that are purely time-based rather than triggered by a client command, so
+nothing else drives them.
+
+Blocked reserve calls (a "reserve"/"reserve-with-timeout" that found
+nothing available) are event-driven, not polled from tick: a blocked
+reserve registers the connection in Tube.WaitingConns for every tube it
+watches (Conn.registerWaiting) and then parks its own connection
+goroutine in Conn.waitForReserve, selecting on a per-connection wake
+channel plus a timer set to the exact next DEADLINE_SOON/reserve-timeout
+instant (Conn.checkWait) — never a fixed poll interval. Server.mu is not
+held while parked. Every site that can make a job in a tube Ready again —
+put/put-at, release, kick/kick-job/kick-tube, tick's delayed-to-ready
+promotion, a TTR expiry's re-enqueue, a connection close re-enqueueing
+its reserved jobs, and a paused tube reopening — calls
+Server.wakeWaitersForTube(t) to signal every conn in t.WaitingConns,
+which re-checks its condition (Conn.checkWait) immediately rather than
+on tick's next pass. This is the event-driven equivalent of stock's
+timer-heap-driven event callbacks; unlike the polling design it replaced,
+it adds no latency between a job becoming available and a matching
+blocked reserve being satisfied (previously up to the 100ms tick
+period), and pins DEADLINE_SOON/TIMED_OUT firing to the instant they're
+due rather than to the next tick.
 
 Lock waits/holds and reserve calls exceeding -slow-log-threshold (default
 50ms) are logged as warnings (Server.lockTraced, Conn.traceReserve) — a
 diagnostic with no equivalent in stock beanstalkd, since stock has no
-locks to trace.
+locks to trace. Conn.traceReserve times only the setup done under lock
+(finding a job or starting to wait), not how long a blocked reserve
+actually waits — waiting itself isn't a symptom of lock contention.
 
 Connection state machine. Conn.serve() (protocol.go) is a loop over
-Conn.state (StateWantCommand, StateWantData, StateBitBucket, StateWait,
-StateClose), mirroring stock beanstalkd's conn.c state machine: read a
-command line, optionally read a job body (or discard one via the bit
-bucket for JOB_TOO_BIG/DRAINING), or block waiting on a reserve.
+Conn.state (StateWantCommand, StateWantData, StateBitBucket, StateClose),
+mirroring stock beanstalkd's conn.c state machine: read a command line,
+optionally read a job body (or discard one via the bit bucket for
+JOB_TOO_BIG/DRAINING), or dispatch a command. A blocking reserve is not a
+state of this machine: dispatchCmd's call into doReserve simply blocks
+the connection's own goroutine (in waitForReserve, see above) until it
+resolves, then returns to the StateWantCommand loop as normal — so, same
+as before, a connection can't pipeline further commands past a pending
+reserve.
 
 Core types, one file each:
 
  - job.go — Job and its lifecycle states (ready/reserved/delayed/buried).
- - tube.go — Tube: a ready heap, a delay heap, and a doubly-linked buried
-   list (FIFO), plus per-tube stats and pause state.
+ - tube.go — Tube: a ready heap, a delay heap, a doubly-linked buried list
+   (FIFO), per-tube stats and pause state, and WaitingConns (connections
+   currently blocked in reserve watching this tube, for the event-driven
+   wakeup described above).
  - heap.go — generic min-heap (Heap[T]) used for both the ready queue
    (ordered by priority, then id) and the delay queue (ordered by
    deadline, then id); each heap element tracks its own index for O(log n)
    removal from the middle (needed by delete/kick-job/reserve-job).
  - index.go — JobIndex: O(1) job lookup by id across all tubes.
- - conn.go — per-connection reserved-job list and watch/use tube
-   bookkeeping.
+ - conn.go — per-connection reserved-job list, watch/use tube bookkeeping,
+   and the wake channel/registration helpers a blocked reserve uses.
  - server.go — Server: tube map, job index, global stats/counters, accept
-   loop, tick loop, stats formatting (YAML for the wire protocol).
+   loop, tick loop, wakeWaitersForTube, stats formatting (YAML for the
+   wire protocol).
 
 Command dispatch. protocol.go: dispatchCmd switches on the command name;
 each handleX method validates args, takes Server.mu, mutates state, and
