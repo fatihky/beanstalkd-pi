@@ -85,13 +85,14 @@ runnable in isolation.
   -log-format                text      log output format: text or json
   -slow-log-threshold      50ms        warn when a reserve call, or a server-lock
                                         hold/wait, exceeds this duration
+  -z                       65536       maximum job body size in bytes
 
 Compared to stock beanstalkd's flags:
 
   stock beanstalkd          beanstalkd-pi               notes
   ------------------------  --------------------------  ----------------------------------------
   -l ADDR / -p PORT         -addr ":11300"               combined into one host:port flag
-  -z BYTES                  (none)                       max job size is fixed at 65536, no flag
+  -z BYTES                  -z 65536                     max job body size in bytes
   -b DIR                    -db PATH                     binlog dir -> SQLite file path; omitting
                                                            either disables persistence
   -s BYTES                  (none)                       no binlog file rotation to size
