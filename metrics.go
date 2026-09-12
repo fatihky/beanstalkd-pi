@@ -114,6 +114,7 @@ func cmdCounters(gs GlobalStats) []struct {
 		{"pause_tube", gs.CmdPauseTube},
 		{"ping", gs.CmdPing},
 		{"set_dlq", gs.CmdSetDlq},
+		{"capabilities", gs.CmdCapabilities},
 	}
 }
 

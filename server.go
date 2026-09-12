@@ -24,6 +24,24 @@ const (
 	version           = "beanstalkd-pi-1.0.0"
 )
 
+// extensionCommands lists every command with no stock beanstalkd
+// equivalent, in the order documented in protocol.txt's "Extension
+// Commands" section. This is the single source of truth for the
+// "extensions" field of the "capabilities" command's reply — add to it
+// when adding a new extension command so capabilities stays accurate
+// without a second place to remember to update.
+var extensionCommands = []string{
+	"ping",
+	"put-at",
+	"kick-tube",
+	"delete-tube",
+	"peek-tube",
+	"stats-conn",
+	"list-connections",
+	"set-dlq",
+	"capabilities",
+}
+
 type GlobalStats struct {
 	CmdPut                uint64
 	CmdPutAt              uint64
@@ -57,6 +75,7 @@ type GlobalStats struct {
 	CmdKickJob            uint64
 	CmdPing               uint64
 	CmdSetDlq             uint64
+	CmdCapabilities       uint64
 	JobTimeouts           uint64
 	JobsDeadLettered      uint64
 	TotalJobs             uint64
@@ -702,6 +721,7 @@ cmd-list-connections: %d
 cmd-pause-tube: %d
 cmd-ping: %d
 cmd-set-dlq: %d
+cmd-capabilities: %d
 job-timeouts: %d
 job-dead-lettered: %d
 total-jobs: %d
@@ -763,6 +783,7 @@ platform: %s
 		gs.CmdPauseTube,
 		gs.CmdPing,
 		gs.CmdSetDlq,
+		gs.CmdCapabilities,
 		gs.JobTimeouts,
 		gs.JobsDeadLettered,
 		gs.TotalJobs,
@@ -894,6 +915,22 @@ func (s *Server) formatListTubes() string {
 		result += "- default\n"
 	}
 	for _, name := range names {
+		result += "- " + name + "\n"
+	}
+	return result
+}
+
+// formatCapabilities renders the reply for the "capabilities" command:
+// the server version, the list of extension commands (see
+// extensionCommands), and the limits a client would otherwise have to
+// hardcode (max-job-size, max-tube-name-len).
+func (s *Server) formatCapabilities() string {
+	result := "---\n"
+	result += fmt.Sprintf("version: %s\n", version)
+	result += fmt.Sprintf("max-job-size: %d\n", s.maxJobSize)
+	result += fmt.Sprintf("max-tube-name-len: %d\n", maxTubeName)
+	result += "extensions:\n"
+	for _, name := range extensionCommands {
 		result += "- " + name + "\n"
 	}
 	return result

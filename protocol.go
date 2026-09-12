@@ -156,6 +156,8 @@ func (c *Conn) dispatchCmd(line string) {
 		return
 	case "ping":
 		c.handlePing()
+	case "capabilities":
+		c.handleCapabilities()
 	default:
 		c.replyWord("UNKNOWN_COMMAND\r\n")
 	}
@@ -1316,6 +1318,19 @@ func (c *Conn) handlePing() {
 	c.Server.mu.Unlock()
 
 	c.replyWord("PONG\r\n")
+}
+
+// handleCapabilities replies with the server version, the list of
+// extension commands with no stock beanstalkd equivalent, and the
+// limits (max-job-size, max-tube-name-len) a client would otherwise
+// have to hardcode or discover by probing and eating UNKNOWN_COMMAND.
+func (c *Conn) handleCapabilities() {
+	c.Server.mu.Lock()
+	c.Server.globalStats.CmdCapabilities++
+	c.Server.mu.Unlock()
+
+	yaml := c.Server.formatCapabilities()
+	c.sendYAML(yaml)
 }
 
 func (c *Conn) handleListTubeUsed() {

@@ -6,7 +6,7 @@ beanstalkd/doc/protocol.txt (git submodule, C reference implementation).
 Read that file first for the full protocol (error replies, every
 command's arguments and replies, stats keys, and so on); it applies to
 beanstalkd-pi unchanged except where noted below. This file only records
-where beanstalkd-pi's wire behavior diverges from it, plus the eight
+where beanstalkd-pi's wire behavior diverges from it, plus the nine
 extension commands that have no stock equivalent at all.
 
 Everything about this implementation that is not part of the wire
@@ -161,6 +161,9 @@ stats:
  - "cmd-ping" is immediately followed by "cmd-set-dlq", an extra key with
    no stock equivalent — see "Extension Commands" below.
 
+ - "cmd-set-dlq" is immediately followed by "cmd-capabilities", an extra
+   key with no stock equivalent — see "Extension Commands" below.
+
  - "job-timeouts" is immediately followed by "job-dead-lettered", an
    extra key with no stock equivalent: the total number of jobs
    automatically routed to a dead-letter tube by "set-dlq" (see
@@ -176,7 +179,7 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The eight commands below have no equivalent in stock beanstalkd's protocol.
+The nine commands below have no equivalent in stock beanstalkd's protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
 shadow, a stock command; beanstalkd-pi recognizes them in addition to the
@@ -454,3 +457,48 @@ commands (BAD_FORMAT, UNKNOWN_COMMAND), there is no error case — there is
 no NOT_FOUND, since <tube> is created rather than required to exist.
 Increments the "cmd-set-dlq" stats counter (see the "stats" command
 above).
+
+The capabilities command lets a client discover what it's talking to
+instead of probing for extension commands one at a time and eating
+UNKNOWN_COMMAND for the ones that don't exist yet, or hardcoding limits
+like the 65536-byte default max job size. Its form is:
+
+    capabilities\r\n
+
+There is no error case beyond the ones common to all commands (BAD_FORMAT,
+UNKNOWN_COMMAND). The response is always:
+
+    OK <bytes>\r\n
+    <data>\r\n
+
+<data> is a YAML mapping with the following keys, in this order:
+
+ - "version" — the server's version string, e.g. "beanstalkd-pi-1.0.0".
+   Matches the "version" field in a "stats" reply.
+
+ - "max-job-size" — the maximum job body size in bytes this server will
+   accept, i.e. the "-z" flag's value (65536 by default). Matches the
+   "max-job-size" field in a "stats" reply. A client should treat this,
+   not a hardcoded 65536, as the limit to check a job body against before
+   sending "put"/"put-at", since it's configurable per server instance.
+
+ - "max-tube-name-len" — the maximum length in bytes of a tube name
+   accepted by any command that takes one ("use", "watch", "kick-tube",
+   "delete-tube", "peek-tube", "set-dlq", and so on). Currently always
+   200 and not configurable, but reported here rather than left for
+   clients to hardcode.
+
+ - "extensions" — a YAML sequence of every command with no stock
+   beanstalkd equivalent, i.e. exactly the commands documented in this
+   "Extension Commands" section, including "capabilities" itself. A
+   client can use this to decide up front whether e.g. "put-at" or
+   "kick-tube" is available, instead of discovering their absence only
+   after sending one and getting UNKNOWN_COMMAND back. This list is not
+   exhaustive of every way beanstalkd-pi's wire behavior diverges from
+   stock (see the rest of this file for those, e.g. extra stats keys on
+   otherwise-stock commands); it only names commands with no stock
+   equivalent at all.
+
+Adding a new extension command means adding it to this list — there is no
+separate registry to keep in sync. Increments the "cmd-capabilities"
+stats counter (see the "stats" command above).
