@@ -21,7 +21,6 @@ const (
 	defaultMaxJobSize = 1 << 16 // 65536
 	maxLineLen        = 224
 	maxTubeName       = 200
-	version           = "beanstalkd-pi-1.0.0"
 )
 
 // extensionCommands lists every command with no stock beanstalkd
@@ -276,7 +275,7 @@ func (s *Server) Run() {
 
 	go s.tickLoop()
 
-	logger.Info("listening", "addr", s.listener.Addr().String())
+	logger.Info("listening", "addr", s.listener.Addr().String(), "version", version, "commit", commit)
 
 	for {
 		c, err := s.listener.Accept()
@@ -799,7 +798,7 @@ platform: %s
 		s.waiting,
 		gs.TotalConnections,
 		os.Getpid(),
-		version,
+		fullVersion(),
 		utime,
 		stime,
 		uptime,
@@ -930,7 +929,7 @@ func (s *Server) formatListTubes() string {
 // hardcode (max-job-size, max-tube-name-len).
 func (s *Server) formatCapabilities() string {
 	result := "---\n"
-	result += fmt.Sprintf("version: %s\n", version)
+	result += fmt.Sprintf("version: %s\n", fullVersion())
 	result += fmt.Sprintf("max-job-size: %d\n", s.maxJobSize)
 	result += fmt.Sprintf("max-tube-name-len: %d\n", maxTubeName)
 	result += "extensions:\n"

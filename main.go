@@ -2,10 +2,12 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
 )
 
 func main() {
+	showVersion := flag.Bool("version", false, "print version information and exit")
 	addr := flag.String("addr", ":11300", "listen address")
 	dbPath := flag.String("db", "", "path to SQLite database file for persistence (empty disables persistence)")
 	httpAddr := flag.String("http-addr", ":11301", "address for the observability HTTP server (/metrics, /healthz); empty disables it")
@@ -15,6 +17,11 @@ func main() {
 	maxJobSize := flag.Int("z", defaultMaxJobSize, "maximum job body size in bytes")
 	slowLogThreshold := flag.Duration("slow-log-threshold", defaultSlowLogThreshold, "log a warning when a reserve call or a server-lock hold/wait exceeds this duration")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println(versionInfo())
+		os.Exit(0)
+	}
 
 	initLogger(*logLevel, *logFormat)
 

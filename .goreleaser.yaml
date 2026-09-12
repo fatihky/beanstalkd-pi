@@ -1,0 +1,100 @@
+# GoReleaser config for beanstalkd-pi. Triggered by
+# .github/workflows/release.yml on every "v*.*.*" tag push; see
+# documentation.txt section 8 ("Versioning and releases") for the
+# release process itself.
+#
+# beanstalkd-pi links github.com/mattn/go-sqlite3 (cgo). Rather than a
+# native-runner-per-arch build matrix, both Linux targets are cross
+# compiled from a single amd64 runner using zig as the C toolchain
+# (CC/CXX below) — see the release workflow for the zig setup step.
+# beanstalkd-bench has no cgo dependency, so it cross compiles normally
+# and additionally ships for darwin/windows for local benchmarking.
+version: 2
+
+project_name: beanstalkd-pi
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: beanstalkd-pi-amd64
+    main: .
+    binary: beanstalkd-pi
+    goos: [linux]
+    goarch: [amd64]
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target x86_64-linux-gnu
+      - CXX=zig c++ -target x86_64-linux-gnu
+    flags:
+      - -trimpath
+    ldflags: &pi_ldflags
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+
+  - id: beanstalkd-pi-arm64
+    main: .
+    binary: beanstalkd-pi
+    goos: [linux]
+    goarch: [arm64]
+    env:
+      - CGO_ENABLED=1
+      - CC=zig cc -target aarch64-linux-gnu
+      - CXX=zig c++ -target aarch64-linux-gnu
+    flags:
+      - -trimpath
+    ldflags: *pi_ldflags
+
+  - id: beanstalkd-bench
+    main: ./cmd/beanstalkd-bench
+    binary: beanstalkd-bench
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags: *pi_ldflags
+
+archives:
+  - id: beanstalkd-pi
+    ids: [beanstalkd-pi-amd64, beanstalkd-pi-arm64]
+    name_template: "beanstalkd-pi_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - documentation.txt
+      - protocol.txt
+
+  - id: beanstalkd-bench
+    ids: [beanstalkd-bench]
+    name_template: "beanstalkd-bench_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - cmd/beanstalkd-bench/README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  use: github
+  groups:
+    - title: Features
+      regexp: '^feat(\([[:word:]-]+\))?!?:'
+      order: 0
+    - title: Fixes
+      regexp: '^fix(\([[:word:]-]+\))?!?:'
+      order: 1
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - '^docs?:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
+
+release:
+  name_template: "v{{ .Version }}"

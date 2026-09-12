@@ -84,6 +84,7 @@ runnable in isolation.
   -slow-log-threshold      50ms        warn when a reserve call, or a server-lock
                                         hold/wait, exceeds this duration
   -z                       65536       maximum job body size in bytes
+  -version                 false       print version information and exit
 
 Compared to stock beanstalkd's flags:
 
@@ -100,7 +101,9 @@ Compared to stock beanstalkd's flags:
                                                            user via the OS/service manager instead
   -c / -n                   (none)                        removed upstream too (binlog is always
                                                            compacted); not applicable here (no binlog)
-  -v / -V / -h               (none, use -h via flag pkg)  Go's flag package provides -h; no -v/-V
+  -v / -V                    -version                     prints the semver + commit + build date
+                                                             (see section 8); Go's flag package
+                                                             provides -h in place of stock's -h
   (none)                    -http-addr ":11301"          observability HTTP server, see section 7
   (none)                    -pprof                        expose net/http/pprof on that server
   (none)                    -log-level / -log-format      structured logging (log/slog), text|json
@@ -397,3 +400,55 @@ itself. beanstalkd-pi additionally starts a plain net/http server
 
 This server is entirely additive — it shares state with the beanstalk
 protocol listener but does not change any reply on the wire protocol.
+
+--------------------------------------------------------------------------
+8. Versioning and releases
+--------------------------------------------------------------------------
+
+beanstalkd-pi is versioned with SemVer git tags (vMAJOR.MINOR.PATCH).
+There is no in-repo VERSION file or hardcoded version constant — the
+version is derived entirely from the git tag at release build time and
+baked into the binary via linker flags (-ldflags -X, see version.go and
+cmd/beanstalkd-bench/version.go). A `go build`/`go run` outside of that
+release process is a "dev" build:
+
+    $ go run . -version
+    beanstalkd-pi-dev (commit none, built unknown)
+
+Where the version surfaces:
+
+ - `-version` on both binaries prints the full string (version, commit,
+   short sha, build date) and exits.
+ - the beanstalk wire protocol's "stats" and "capabilities" replies'
+   version: field (formatCapabilities/formatStats in server.go) carries
+   only the short "beanstalkd-pi-<semver>" form, not commit/date, so it
+   stays a small, stable string on the wire.
+ - the "listening" startup log line (Server.Run) logs version and commit.
+ - GET /metrics exposes them as labels on the beanstalkd_build_info gauge
+   (always 1; scrape it for `{version=...,commit=...,date=...}`).
+
+Cutting a release:
+
+    git tag v1.2.3
+    git push origin v1.2.3
+
+Pushing a "v*.*.*" tag runs .github/workflows/release.yml, which invokes
+GoReleaser (.goreleaser.yaml) to cross-compile beanstalkd-pi (linux/amd64,
+linux/arm64) and beanstalkd-bench (linux/darwin/windows ×
+amd64/arm64), archive them, write checksums.txt, generate a changelog
+grouped from Conventional Commit prefixes (feat:/fix:/other, docs:/test:/
+chore:/ci: excluded), and publish everything to GitHub Releases under
+that tag.
+
+beanstalkd-pi links github.com/mattn/go-sqlite3, which is cgo — normal
+`GOOS=... GOARCH=... go build` cross-compilation doesn't work for it.
+The release workflow cross-compiles both Linux targets from one amd64
+GitHub Actions runner using zig as the C toolchain (CC/CXX in
+.goreleaser.yaml point at `zig cc`/`zig c++`) rather than a
+native-runner-per-architecture build matrix. beanstalkd-bench has no cgo
+dependency and cross-compiles the normal way.
+
+There's also a plain CI workflow, .github/workflows/ci.yml (go build/vet/
+test on every push to master and every pull request), unrelated to
+releasing — it exists so a broken build can't reach a tag in the first
+place.

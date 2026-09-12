@@ -30,6 +30,10 @@ func main() {
 		fmt.Fprintln(os.Stderr, "beanstalkd-bench:", err)
 		os.Exit(2)
 	}
+	if cfg.showVersion {
+		fmt.Println(versionInfo())
+		os.Exit(0)
+	}
 	if err := run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "beanstalkd-bench:", err)
 		os.Exit(1)
@@ -51,6 +55,7 @@ type config struct {
 	reserveTimeout time.Duration
 	drainTimeout   time.Duration
 	idleConns      int
+	showVersion    bool
 }
 
 func parseFlags(args []string) (*config, error) {
@@ -71,6 +76,7 @@ func parseFlags(args []string) (*config, error) {
 	fs.DurationVar(&cfg.reserveTimeout, "reserve-timeout", 1*time.Second, "per-RESERVE timeout used by consumers while polling for jobs; also bounds how long a consumer can take to notice shutdown while idle")
 	fs.DurationVar(&cfg.drainTimeout, "drain-timeout", 30*time.Second, "max time consumers keep reserving to reach -n jobs: after producers finish (both mode), or from the start (reserve mode)")
 	fs.IntVar(&cfg.idleConns, "idle-conns", 0, "additional connections to open and hold idle (connected, watching only \"default\", never reserving) for the duration of the run — layer this on any -mode to see the server's per-connection CPU/memory overhead under many concurrent clients; with -mode idle these are the only connections opened")
+	fs.BoolVar(&cfg.showVersion, "version", false, "print version information and exit")
 	if err := fs.Parse(args); err != nil {
 		return nil, err
 	}

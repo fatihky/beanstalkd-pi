@@ -125,6 +125,10 @@ func writeMetrics(w io.Writer, snap statsSnapshot) {
 	fmt.Fprintf(w, "# TYPE beanstalkd_up gauge\n")
 	fmt.Fprintf(w, "beanstalkd_up %g\n", up)
 
+	fmt.Fprintf(w, "# HELP beanstalkd_build_info Build information, always 1; version/commit/date are labels.\n")
+	fmt.Fprintf(w, "# TYPE beanstalkd_build_info gauge\n")
+	fmt.Fprintf(w, "beanstalkd_build_info{version=%q,commit=%q,date=%q} 1\n", version, commit, date)
+
 	fmt.Fprintf(w, "# HELP beanstalkd_uptime_seconds Seconds since the server started.\n")
 	fmt.Fprintf(w, "# TYPE beanstalkd_uptime_seconds gauge\n")
 	fmt.Fprintf(w, "beanstalkd_uptime_seconds %g\n", snap.uptime.Seconds())

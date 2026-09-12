@@ -1,0 +1,43 @@
+name: release
+
+# Cutting a release is just pushing a tag:
+#   git tag v1.2.3 && git push origin v1.2.3
+# See documentation.txt section 8 for the full process. GoReleaser
+# (.goreleaser.yaml) then builds, archives, checksums, and publishes to
+# GitHub Releases with a changelog grouped from Conventional Commits.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # go-sqlite3 (cgo) needs a C cross toolchain for the arm64 Linux
+      # build; zig bundles one for every target so a single amd64 runner
+      # can produce both linux/amd64 and linux/arm64 (see CC/CXX in
+      # .goreleaser.yaml). beanstalkd-bench has no cgo dependency and
+      # doesn't need this.
+      - uses: mlugg/setup-zig@v1
+        with:
+          version: "0.13.0"
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
