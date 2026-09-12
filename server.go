@@ -49,7 +49,9 @@ type GlobalStats struct {
 	CmdListTubes          uint64
 	CmdListTubeUsed       uint64
 	CmdListTubesWatched   uint64
+	CmdListConnections    uint64
 	CmdPauseTube          uint64
+	CmdStatsConn          uint64
 	CmdReserveJob         uint64
 	CmdKickJob            uint64
 	CmdPing               uint64
@@ -659,9 +661,11 @@ cmd-kick-tube: %d
 cmd-stats: %d
 cmd-stats-job: %d
 cmd-stats-tube: %d
+cmd-stats-conn: %d
 cmd-list-tubes: %d
 cmd-list-tube-used: %d
 cmd-list-tubes-watched: %d
+cmd-list-connections: %d
 cmd-pause-tube: %d
 cmd-ping: %d
 job-timeouts: %d
@@ -716,9 +720,11 @@ platform: %s
 		gs.CmdStats,
 		gs.CmdStatsJob,
 		gs.CmdStatsTube,
+		gs.CmdStatsConn,
 		gs.CmdListTubes,
 		gs.CmdListTubeUsed,
 		gs.CmdListTubesWatched,
+		gs.CmdListConnections,
 		gs.CmdPauseTube,
 		gs.CmdPing,
 		gs.JobTimeouts,

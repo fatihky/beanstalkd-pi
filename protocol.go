@@ -139,6 +139,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handleStatsJob(parts[1:])
 	case "stats-tube":
 		c.handleStatsTube(parts[1:])
+	case "stats-conn":
+		c.handleStatsConn()
 	case "stats":
 		c.handleStats()
 	case "list-tubes":
@@ -147,6 +149,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handleListTubeUsed()
 	case "list-tubes-watched":
 		c.handleListTubesWatched()
+	case "list-connections":
+		c.handleListConnections()
 	case "pause-tube":
 		c.handlePauseTube(parts[1:])
 	case "quit":

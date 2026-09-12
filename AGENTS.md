@@ -104,6 +104,10 @@ via the bit bucket for `JOB_TOO_BIG`/`DRAINING`), or block waiting on a
   bookkeeping.
 - `server.go` — `Server`: tube map, job index, global stats/counters,
   accept loop, tick loop, stats formatting (YAML for the wire protocol).
+- `conn_stats.go` — the `stats-conn`/`list-connections` extension
+  commands: per-connection introspection YAML (used tube, watched tubes,
+  reserved job ids, producer/worker/waiting flags), built from `conn.go`'s
+  bookkeeping and `server.go`'s `conns` map.
 
 **Command dispatch.** `protocol.go:dispatchCmd` switches on the command
 name and each `handleX` method validates args, takes `Server.mu`, mutates

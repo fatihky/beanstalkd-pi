@@ -6,7 +6,7 @@ beanstalkd/doc/protocol.txt (git submodule, C reference implementation).
 Read that file first for the full protocol (error replies, every
 command's arguments and replies, stats keys, and so on); it applies to
 beanstalkd-pi unchanged except where noted below. This file only records
-where beanstalkd-pi's wire behavior diverges from it, plus the five
+where beanstalkd-pi's wire behavior diverges from it, plus the seven
 extension commands that have no stock equivalent at all.
 
 Everything about this implementation that is not part of the wire
@@ -65,7 +65,7 @@ Error replies:
  - INTERNAL_ERROR is never sent; not part of this server's error
    vocabulary.
 
- - UNKNOWN_COMMAND: five commands beyond stock's set are recognized
+ - UNKNOWN_COMMAND: seven commands beyond stock's set are recognized
    instead of producing this reply — see "Extension Commands" below.
 
 put:
@@ -128,6 +128,13 @@ stats:
  - "cmd-peek-buried" is immediately followed by "cmd-peek-tube", an extra
    key with no stock equivalent — see "Extension Commands" below.
 
+ - "cmd-stats-tube" is immediately followed by "cmd-stats-conn", an extra
+   key with no stock equivalent — see "Extension Commands" below.
+
+ - "cmd-list-tubes-watched" is immediately followed by
+   "cmd-list-connections", an extra key with no stock equivalent — see
+   "Extension Commands" below.
+
  - All five binlog-* fields ("binlog-oldest-index",
    "binlog-current-index", "binlog-max-size", "binlog-records-written",
    "binlog-records-migrated") are hard-coded to 0. There is no binlog
@@ -138,7 +145,7 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The five commands below have no equivalent in stock beanstalkd's protocol.
+The seven commands below have no equivalent in stock beanstalkd's protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
 shadow, a stock command; beanstalkd-pi recognizes them in addition to the
@@ -266,3 +273,70 @@ or a <state> other than "ready"/"delayed"/"buried") replies BAD_FORMAT.
 Increments the "cmd-peek-tube" stats counter (see the "stats" command
 above); "cmd-peek-ready"/"cmd-peek-delayed"/"cmd-peek-buried" are
 unaffected by peek-tube calls.
+
+The stats-conn command returns introspection stats about the connection
+that sent it — the single most useful thing missing from stock's
+introspection commands, since stock has no notion of a connection as
+something a client can inspect at all. Its form is:
+
+    stats-conn\r\n
+
+Unlike stats-job/stats-tube, it takes no argument: it is always about the
+calling connection, so a client that has no other way to learn its own
+connection id (e.g. for correlating with list-connections, or with a log
+line elsewhere) can retrieve it here. The response is always:
+
+    OK <bytes>\r\n
+    <data>\r\n
+
+<data> is a YAML mapping with the following keys, in this order:
+
+ - "id" — the connection's id (matches the "id" field in list-connections,
+   and correlates with the "conn" field in beanstalkd-pi's own logs).
+
+ - "addr" — the connection's remote address, as text (host:port).
+
+ - "tube" — the name of the connection's currently used tube (the one
+   "put" inserts into).
+
+ - "watching" — a YAML flow-style list of the names of every tube the
+   connection is watching (the tubes "reserve" draws from), e.g.
+   "[default, foo]".
+
+ - "reserved-jobs" — a YAML flow-style list of the ids of every job the
+   connection currently holds reserved, e.g. "[101, 102]", or "[]" if it
+   holds none.
+
+ - "producer" — "true" if the connection has ever sent "put"/"put-at",
+   else "false".
+
+ - "worker" — "true" if the connection has ever sent
+   "reserve"/"reserve-with-timeout"/"reserve-job", else "false".
+
+ - "waiting" — "true" if the connection is currently blocked in a reserve
+   call, else "false".
+
+There is no error case beyond the ones common to all commands (BAD_FORMAT,
+UNKNOWN_COMMAND). Increments the "cmd-stats-conn" stats counter (see the
+"stats" command above).
+
+The list-connections command returns the same fields as stats-conn for
+every currently connected client, answering questions stats-conn can't —
+e.g. "which connection is holding job 4711, and what tubes is it
+watching". Its form is:
+
+    list-connections\r\n
+
+The response is always:
+
+    OK <bytes>\r\n
+    <data>\r\n
+
+<data> is a YAML sequence of mappings, one per connection, each with the
+same "id"/"addr"/"tube"/"watching"/"reserved-jobs"/"producer"/"worker"/
+"waiting" keys as stats-conn, ordered by ascending connection id. The
+sequence is empty ("---\n") only in the impossible case of no connections
+at all — the caller itself is always a connection, so it always includes
+at least one entry. There is no error case beyond the ones common to all
+commands (BAD_FORMAT, UNKNOWN_COMMAND). Increments the
+"cmd-list-connections" stats counter (see the "stats" command above).
