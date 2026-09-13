@@ -50,6 +50,17 @@ func (h *Heap[T]) Pop() T {
 	return top
 }
 
+// Snapshot returns a shallow copy of the heap's backing slice, in heap
+// order (root = min, but otherwise NOT fully sorted). Callers that need
+// sorted order must sort the returned copy themselves with the same
+// comparator the heap uses - sorting h.items in place would corrupt the
+// heap invariant for every job still tracked by it.
+func (h *Heap[T]) Snapshot() []T {
+	out := make([]T, len(h.items))
+	copy(out, h.items)
+	return out
+}
+
 func (h *Heap[T]) Peek() T {
 	var zero T
 	if len(h.items) == 0 {

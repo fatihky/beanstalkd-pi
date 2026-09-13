@@ -35,6 +35,7 @@ var extensionCommands = []string{
 	"kick-tube",
 	"delete-tube",
 	"peek-tube",
+	"list-jobs",
 	"stats-conn",
 	"list-connections",
 	"set-dlq",
@@ -50,6 +51,7 @@ type GlobalStats struct {
 	CmdPeekDelayed        uint64
 	CmdPeekBuried         uint64
 	CmdPeekTube           uint64
+	CmdListJobs           uint64
 	CmdReserve            uint64
 	CmdReserveWithTimeout uint64
 	CmdTouch              uint64
@@ -716,6 +718,7 @@ cmd-peek-ready: %d
 cmd-peek-delayed: %d
 cmd-peek-buried: %d
 cmd-peek-tube: %d
+cmd-list-jobs: %d
 cmd-reserve: %d
 cmd-reserve-with-timeout: %d
 cmd-touch: %d
@@ -779,6 +782,7 @@ platform: %s
 		gs.CmdPeekDelayed,
 		gs.CmdPeekBuried,
 		gs.CmdPeekTube,
+		gs.CmdListJobs,
 		gs.CmdReserve,
 		gs.CmdReserveWithTimeout,
 		gs.CmdTouch,

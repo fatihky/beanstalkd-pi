@@ -125,6 +125,8 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handlePeekBuried()
 	case "peek-tube":
 		c.handlePeekTube(parts[1:])
+	case "list-jobs":
+		c.handleListJobs(parts[1:])
 	case "kick":
 		c.handleKick(parts[1:])
 	case "kick-tube":

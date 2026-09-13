@@ -148,8 +148,9 @@ stats:
  - "cmd-pause-tube" is immediately followed by "cmd-delete-tube", an
    extra key with no stock equivalent — see "Extension Commands" below.
 
- - "cmd-peek-buried" is immediately followed by "cmd-peek-tube", an extra
-   key with no stock equivalent — see "Extension Commands" below.
+ - "cmd-peek-buried" is immediately followed by "cmd-peek-tube" and then
+   "cmd-list-jobs", two extra keys with no stock equivalent — see
+   "Extension Commands" below.
 
  - "cmd-stats-tube" is immediately followed by "cmd-stats-conn", an extra
    key with no stock equivalent — see "Extension Commands" below.
@@ -182,7 +183,8 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The ten commands below have no equivalent in stock beanstalkd's protocol.
+The eleven commands below have no equivalent in stock beanstalkd's
+protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
 shadow, a stock command; beanstalkd-pi recognizes them in addition to the
@@ -310,6 +312,79 @@ or a <state> other than "ready"/"delayed"/"buried") replies BAD_FORMAT.
 Increments the "cmd-peek-tube" stats counter (see the "stats" command
 above); "cmd-peek-ready"/"cmd-peek-delayed"/"cmd-peek-buried" are
 unaffected by peek-tube calls.
+
+The list-jobs command returns a bounded, non-destructive listing of a
+tube's ready, delayed, or buried jobs — the queue-inspection operators
+ask for most often, and something stock beanstalkd has no equivalent of
+at all (its only per-tube views are peek-ready/peek-delayed/peek-buried,
+each returning at most one job). Its form is:
+
+    list-jobs <tube> <state> [limit]\r\n
+
+ - <tube> is a name at most 200 bytes, the tube to inspect.
+
+ - <state> is one of "ready", "delayed", or "buried". Unlike peek-tube,
+   "reserved" is not a valid <state>: reserved jobs live on each
+   connection's reserved list, not a per-tube heap or list, so there is
+   no equivalently cheap bounded scan for them.
+
+ - [limit] is an optional maximum number of jobs to return. It defaults
+   to 100 if omitted, and is silently capped at 10000 if given larger —
+   the scan, sort, and reply are all built while holding the server's
+   single global lock, so an unbounded limit against a large tube would
+   stall every other connection and the 100ms tick loop for its
+   duration.
+
+The response is always:
+
+    OK <bytes>\r\n
+    <data>\r\n
+
+<data> is a YAML sequence, one mapping per job, ordered the same way the
+tube would actually serve them:
+
+ - "ready" — priority order (lowest "pri" first), ties broken by job id,
+   the same order peek-ready/reserve would draw from.
+
+ - "delayed" — soonest deadline first, ties broken by job id, the same
+   order the delayed job closest to becoming ready appears in.
+
+ - "buried" — oldest first (FIFO), the same order peek-buried/kick would
+   walk.
+
+Each mapping has the following keys:
+
+ - "id" — the job's id.
+
+ - "pri" — the job's priority.
+
+ - "age" — seconds since the job was created (same meaning as the "age"
+   key in a stats-job reply).
+
+ - "size" — the job's body size in bytes, excluding the trailing "\r\n"
+   (same meaning as the <bytes> stock beanstalkd's "reserve"/"peek"
+   family report for the job).
+
+ - "time-left" — seconds until the job's delay elapses and it becomes
+   ready. Present only when <state> is "delayed".
+
+Job bodies are deliberately not included: a body is arbitrary bytes up
+to max-job-size and cannot be embedded safely in a YAML sequence
+alongside every other job's, the way a single job's raw bytes can follow
+a "FOUND" reply's length prefix. To read a specific job's body once
+list-jobs has told you its id, follow up with "peek <id>", which looks a
+job up by id regardless of its current state.
+
+If the named tube does not exist, the response is:
+
+    NOT_FOUND\r\n
+
+A malformed command line (wrong number of arguments, an invalid tube
+name, a <state> other than "ready"/"delayed"/"buried", or a non-numeric
+[limit]) replies BAD_FORMAT. Increments the "cmd-list-jobs" stats
+counter (see the "stats" command above); it sits immediately after
+"cmd-peek-tube" in the stats reply and is unaffected by peek-ready/
+peek-delayed/peek-buried/peek-tube calls.
 
 The stats-conn command returns introspection stats about a connection —
 the single most useful thing missing from stock's introspection
