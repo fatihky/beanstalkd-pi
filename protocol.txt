@@ -135,6 +135,10 @@ stats-tube:
    configured destination tube name, or "" (empty) when disabled. Stock
    clients ignore unknown stats keys, so this is transparent to them.
 
+ - See also "stats-tube-all" under "Extension Commands" below, which
+   returns this same reply's fields for every tube in one YAML document
+   instead of one tube at a time.
+
 stats:
 
  - "cmd-put" is immediately followed by "cmd-put-at", an extra key with
@@ -152,12 +156,13 @@ stats:
    "cmd-list-jobs", two extra keys with no stock equivalent — see
    "Extension Commands" below.
 
- - "cmd-stats-tube" is immediately followed by "cmd-stats-conn", an extra
-   key with no stock equivalent — see "Extension Commands" below.
+ - "cmd-stats-tube" is immediately followed by "cmd-stats-tube-all" and
+   then "cmd-stats-conn", two extra keys with no stock equivalent — see
+   "Extension Commands" below.
 
  - "cmd-list-tubes-watched" is immediately followed by
-   "cmd-list-connections", an extra key with no stock equivalent — see
-   "Extension Commands" below.
+   "cmd-list-tubes-paused" and then "cmd-list-connections", two extra
+   keys with no stock equivalent — see "Extension Commands" below.
 
  - "cmd-ping" is immediately followed by "cmd-set-dlq", an extra key with
    no stock equivalent — see "Extension Commands" below.
@@ -183,7 +188,7 @@ stats:
 Extension Commands
 --------------------------------------------------------------------------
 
-The eleven commands below have no equivalent in stock beanstalkd's
+The thirteen commands below have no equivalent in stock beanstalkd's
 protocol.
 A stock client that sends any of these command names against stock
 beanstalkd receives UNKNOWN_COMMAND, so none of them can collide with, or
@@ -385,6 +390,51 @@ name, a <state> other than "ready"/"delayed"/"buried", or a non-numeric
 counter (see the "stats" command above); it sits immediately after
 "cmd-peek-tube" in the stats reply and is unaffected by peek-ready/
 peek-delayed/peek-buried/peek-tube calls.
+
+The list-tubes-paused command returns the names of every currently paused
+tube — the names list-tubes + N x stats-tube would otherwise cost N lock
+acquisitions to assemble, one per tube, just to find out which ones are
+paused. Its form is:
+
+    list-tubes-paused\r\n
+
+There is no error case beyond the ones common to all commands (BAD_FORMAT,
+UNKNOWN_COMMAND). The response is always:
+
+    OK <bytes>\r\n
+    <data>\r\n
+
+<data> is a YAML sequence of tube names, sorted alphabetically (unlike
+list-tubes, "default" is not special-cased to sort first — it appears in
+its alphabetical position, and only at all if it is itself paused). The
+sequence is empty ("---\n") if no tube is currently paused. A tube whose
+pause-tube deadline has already passed is not included, exactly as
+stats-tube's own "pause"/"pause-time-left" fields would report it
+unpaused. Increments the "cmd-list-tubes-paused" stats counter (see the
+"stats" command above).
+
+The stats-tube-all command returns stats-tube's fields for every tube in
+one YAML document — the same information list-tubes + N x stats-tube
+would otherwise require N+1 lock acquisitions to assemble, one per tube
+plus the initial listing. Its form is:
+
+    stats-tube-all\r\n
+
+There is no error case beyond the ones common to all commands (BAD_FORMAT,
+UNKNOWN_COMMAND). The response is always:
+
+    OK <bytes>\r\n
+    <data>\r\n
+
+<data> is a YAML sequence of mappings, one per tube, ordered the same way
+list-tubes orders tubes ("default" first if present, then the rest
+alphabetically). Each mapping has exactly the same keys, in the same
+order, as a stats-tube reply for that tube (see "stats-tube" above),
+including "name" to identify which tube each entry belongs to. The
+sequence is empty ("---\n") only in the impossible case of no tubes at
+all — "default" always exists. Increments the "cmd-stats-tube-all" stats
+counter (see the "stats" command above); "cmd-stats-tube" is unaffected
+by stats-tube-all calls.
 
 The stats-conn command returns introspection stats about a connection —
 the single most useful thing missing from stock's introspection

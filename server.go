@@ -36,6 +36,8 @@ var extensionCommands = []string{
 	"delete-tube",
 	"peek-tube",
 	"list-jobs",
+	"list-tubes-paused",
+	"stats-tube-all",
 	"stats-conn",
 	"list-connections",
 	"set-dlq",
@@ -67,9 +69,11 @@ type GlobalStats struct {
 	CmdStats              uint64
 	CmdStatsJob           uint64
 	CmdStatsTube          uint64
+	CmdStatsTubeAll       uint64
 	CmdListTubes          uint64
 	CmdListTubeUsed       uint64
 	CmdListTubesWatched   uint64
+	CmdListTubesPaused    uint64
 	CmdListConnections    uint64
 	CmdPauseTube          uint64
 	CmdStatsConn          uint64
@@ -734,10 +738,12 @@ cmd-kick-tube: %d
 cmd-stats: %d
 cmd-stats-job: %d
 cmd-stats-tube: %d
+cmd-stats-tube-all: %d
 cmd-stats-conn: %d
 cmd-list-tubes: %d
 cmd-list-tube-used: %d
 cmd-list-tubes-watched: %d
+cmd-list-tubes-paused: %d
 cmd-list-connections: %d
 cmd-pause-tube: %d
 cmd-ping: %d
@@ -798,10 +804,12 @@ platform: %s
 		gs.CmdStats,
 		gs.CmdStatsJob,
 		gs.CmdStatsTube,
+		gs.CmdStatsTubeAll,
 		gs.CmdStatsConn,
 		gs.CmdListTubes,
 		gs.CmdListTubeUsed,
 		gs.CmdListTubesWatched,
+		gs.CmdListTubesPaused,
 		gs.CmdListConnections,
 		gs.CmdPauseTube,
 		gs.CmdPing,

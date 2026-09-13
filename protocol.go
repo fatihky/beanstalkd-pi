@@ -147,6 +147,10 @@ func (c *Conn) dispatchCmd(line string) {
 		c.handleListTubeUsed()
 	case "list-tubes-watched":
 		c.handleListTubesWatched()
+	case "list-tubes-paused":
+		c.handleListTubesPaused()
+	case "stats-tube-all":
+		c.handleStatsTubeAll()
 	case "list-connections":
 		c.handleListConnections()
 	case "pause-tube":
