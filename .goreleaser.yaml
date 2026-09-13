@@ -21,7 +21,7 @@ builds:
   - id: beanstalkd-pi-amd64
     main: .
     binary: beanstalkd-pi
-    goos: [linux, windows]
+    goos: [linux]
     goarch: [amd64]
     env:
       - CGO_ENABLED=1
@@ -38,7 +38,7 @@ builds:
   - id: beanstalkd-pi-arm64
     main: .
     binary: beanstalkd-pi
-    goos: [linux, darwin, windows]
+    goos: [linux]
     goarch: [arm64]
     env:
       - CGO_ENABLED=1
@@ -91,10 +91,10 @@ changelog:
       order: 999
   filters:
     exclude:
-      - "^docs?:"
-      - "^test:"
-      - "^chore:"
-      - "^ci:"
+      - '^docs?:'
+      - '^test:'
+      - '^chore:'
+      - '^ci:'
 
 release:
   name_template: "v{{ .Version }}"
