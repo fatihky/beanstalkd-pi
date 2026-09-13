@@ -9,6 +9,13 @@
 # (CC/CXX below) — see the release workflow for the zig setup step.
 # beanstalkd-bench has no cgo dependency, so it cross compiles normally
 # and additionally ships for darwin/windows for local benchmarking.
+#
+# beanstalkd-pi's darwin archives are intentionally not defined here:
+# zig can't link cgo binaries for darwin (no real macOS SDK, just a
+# stub), and GoReleaser's multi-runner split/merge feature is Pro-only.
+# See the release workflow's darwin job and documentation.txt section 8
+# — it builds them with a plain `go build` on a macOS runner and attaches
+# the archives to the release this config publishes.
 version: 2
 
 project_name: beanstalkd-pi

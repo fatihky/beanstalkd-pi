@@ -443,7 +443,10 @@ linux/arm64) and beanstalkd-bench (linux/darwin/windows ×
 amd64/arm64), archive them, write checksums.txt, generate a changelog
 grouped from Conventional Commit prefixes (feat:/fix:/other, docs:/test:/
 chore:/ci: excluded), and publish everything to GitHub Releases under
-that tag.
+that tag. A second job in the same workflow then builds beanstalkd-pi for
+darwin/amd64 and darwin/arm64 and attaches those archives (and amended
+checksums.txt) to the same release — see below for why that's a separate
+job outside GoReleaser rather than another target in the build above.
 
 beanstalkd-pi links github.com/mattn/go-sqlite3, which is cgo — normal
 `GOOS=... GOARCH=... go build` cross-compilation doesn't work for it.
@@ -452,6 +455,21 @@ GitHub Actions runner using zig as the C toolchain (CC/CXX in
 .goreleaser.yaml point at `zig cc`/`zig c++`) rather than a
 native-runner-per-architecture build matrix. beanstalkd-bench has no cgo
 dependency and cross-compiles the normal way.
+
+zig's cross-compile trick doesn't extend to darwin: zig bundles a full
+target libc for Linux (glibc/musl), but only a minimal stub for macOS —
+enough for plain C, not enough to link a cgo Go binary (linking
+darwin/amd64 via `zig cc -target x86_64-macos` fails with "unable to find
+dynamic system library 'resolv'"). GoReleaser's own answer to
+multi-runner cgo builds — the split/merge feature, building each OS on
+its native runner and merging into one release — is Pro-only. So the
+darwin job in release.yml runs on an actual `macos-14` runner and builds
+outside GoReleaser entirely with a plain `go build`: Xcode's clang
+natively cross-compiles between amd64 and arm64 macOS targets (no extra
+toolchain needed for either arch, unlike Linux), and the job then uses
+`gh release upload` to attach the resulting archives to the release the
+goreleaser job already published, appending their checksums to the
+downloaded checksums.txt before re-uploading it.
 
 There's also a plain CI workflow, .github/workflows/ci.yml (go build/vet/
 test on every push to master and every pull request), unrelated to

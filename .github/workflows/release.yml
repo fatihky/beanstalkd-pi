@@ -3,8 +3,12 @@ name: release
 # Cutting a release is just pushing a tag:
 #   git tag v1.2.3 && git push origin v1.2.3
 # See documentation.txt section 8 for the full process. GoReleaser
-# (.goreleaser.yaml) then builds, archives, checksums, and publishes to
-# GitHub Releases with a changelog grouped from Conventional Commits.
+# (.goreleaser.yaml) builds, archives, checksums, and publishes the Linux
+# beanstalkd-pi binaries (plus beanstalkd-bench for all platforms) to
+# GitHub Releases with a changelog grouped from Conventional Commits. The
+# darwin job below then attaches native macOS beanstalkd-pi builds to that
+# same release — see its comment for why that can't be done from the
+# goreleaser job's Linux runner.
 on:
   push:
     tags:
@@ -41,3 +45,60 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  darwin:
+    needs: goreleaser
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # beanstalkd-pi's darwin archives aren't built by the goreleaser job
+      # above: go-sqlite3 is cgo, and unlike Linux (cross-compiled via zig,
+      # which bundles a full target libc) zig has no real macOS SDK to
+      # link cgo against — only a minimal stub, not enough for a working
+      # binary (confirmed by hand: cross-compiling darwin/amd64 via `zig
+      # cc -target x86_64-macos` fails at link time with "unable to find
+      # dynamic system library 'resolv'"). GoReleaser's own multi-runner
+      # split/merge feature that would let a macOS runner contribute
+      # builds to the same goreleaser release is Pro-only. So this job
+      # runs on an actual macOS runner instead and builds outside
+      # GoReleaser entirely: Xcode's clang natively cross-compiles between
+      # amd64 and arm64 macOS targets (no extra toolchain needed for
+      # either arch), and the resulting archives are attached to the
+      # release goreleaser already created, with checksums.txt amended to
+      # match.
+      - name: Build darwin archives
+        env:
+          CGO_ENABLED: 1
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          commit="${GITHUB_SHA}"
+          date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          ldflags="-s -w -X main.version=${version} -X main.commit=${commit} -X main.date=${date}"
+          mkdir -p dist
+          for arch in arm64 amd64; do
+            stage="dist/stage_darwin_${arch}"
+            mkdir -p "$stage"
+            GOOS=darwin GOARCH="$arch" go build -trimpath -ldflags "$ldflags" -o "$stage/beanstalkd-pi" .
+            cp README.md documentation.txt protocol.txt "$stage/"
+            tar -C "$stage" -czf "dist/beanstalkd-pi_${version}_darwin_${arch}.tar.gz" \
+              beanstalkd-pi README.md documentation.txt protocol.txt
+          done
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+
+      - name: Attach darwin archives and checksums to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          gh release download "$tag" -p checksums.txt -O dist/checksums.txt --clobber
+          for f in dist/beanstalkd-pi_${VERSION}_darwin_*.tar.gz; do
+            shasum -a 256 "$f" | awk -v name="$(basename "$f")" '{print $1"  "name}' >> dist/checksums.txt
+          done
+          gh release upload "$tag" dist/beanstalkd-pi_${VERSION}_darwin_*.tar.gz dist/checksums.txt --clobber
