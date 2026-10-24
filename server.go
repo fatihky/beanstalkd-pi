@@ -276,12 +276,18 @@ func (s *Server) Run() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGUSR1, syscall.SIGINT, syscall.SIGTERM)
 
+	// shutdownDone is closed once the graceful shutdown sequence below has
+	// finished, so Run (and therefore main) doesn't return - and exit the
+	// process - before persistence has flushed its last batch.
+	shutdownDone := make(chan struct{})
+
 	go func() {
 		for sig := range sigCh {
 			switch sig {
 			case syscall.SIGUSR1:
 				s.setDrain(true)
 			case syscall.SIGINT, syscall.SIGTERM:
+				defer close(shutdownDone)
 				logger.Info("shutting down...")
 				close(s.closeCh)
 				s.listener.Close()
@@ -303,6 +309,7 @@ func (s *Server) Run() {
 		if err != nil {
 			select {
 			case <-s.closeCh:
+				<-shutdownDone
 				return
 			default:
 				logger.Error("accept error", "err", err)
