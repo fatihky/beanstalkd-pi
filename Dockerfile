@@ -19,10 +19,15 @@ RUN go mod download
 COPY . .
 
 ARG VERSION=dev
-ARG COMMIT=none
-ARG DATE=unknown
+ARG COMMIT
+ARG DATE
+# Set by Coolify (and other PaaS builders) to the full git SHA; used when
+# COMMIT isn't passed. DATE, when not passed, is the build time.
+ARG SOURCE_COMMIT
 
-RUN CGO_ENABLED=1 go build -trimpath \
+RUN COMMIT="${COMMIT:-${SOURCE_COMMIT:-none}}" \
+ && DATE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" \
+ && CGO_ENABLED=1 go build -trimpath \
       -ldflags "-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.date=${DATE}" \
       -o /out/beanstalkd-pi . \
  && mkdir -p /out/data

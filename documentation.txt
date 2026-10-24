@@ -495,7 +495,17 @@ runtime (glibc, no shell, runs as the image's nonroot user).
       beanstalkd-pi
 
 The VERSION/COMMIT/DATE build args feed the same -ldflags -X variables as
-the release build (section 8); omitted, the image is a "dev" build.
+the release build (section 8). Omitted, VERSION is "dev", COMMIT falls
+back to the SOURCE_COMMIT build arg (else "none"), and DATE to the build
+time.
+
+Coolify: create an application with the Dockerfile build pack, set
+Advanced > Build > "Source commit availability" to "Available during
+build" (Coolify then passes the git SHA as SOURCE_COMMIT), and optionally
+add a VERSION environment variable marked as a build variable. Expose
+11300 (raw TCP, not HTTP: map it as a port, e.g. 11300:11300, rather
+than routing it through the proxy's domain), add persistent storage
+mounted at /data, and point the healthcheck at GET /healthz on 11301.
 
 The default command is `-addr :11300 -http-addr :11301 -db
 /data/jobs.db`, i.e. SQLite persistence is on, in the /data volume.
