@@ -475,3 +475,47 @@ There's also a plain CI workflow, .github/workflows/ci.yml (go build/vet/
 test on every push to master and every pull request), unrelated to
 releasing — it exists so a broken build can't reach a tag in the first
 place.
+
+--------------------------------------------------------------------------
+9. Running in a container
+--------------------------------------------------------------------------
+
+The repo-root Dockerfile builds a beanstalkd-pi image: a golang builder
+stage (cgo on, for go-sqlite3) and a gcr.io/distroless/base-debian12
+runtime (glibc, no shell, runs as the image's nonroot user).
+
+    docker build -t beanstalkd-pi \
+      --build-arg VERSION=1.2.3 \
+      --build-arg COMMIT=$(git rev-parse --short HEAD) \
+      --build-arg DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) .
+
+    docker run -d --name beanstalkd-pi \
+      -p 11300:11300 -p 11301:11301 \
+      -v beanstalkd-pi-data:/data \
+      beanstalkd-pi
+
+The VERSION/COMMIT/DATE build args feed the same -ldflags -X variables as
+the release build (section 8); omitted, the image is a "dev" build.
+
+The default command is `-addr :11300 -http-addr :11301 -db
+/data/jobs.db`, i.e. SQLite persistence is on, in the /data volume.
+Arguments passed to `docker run` replace that whole command, so repeat
+-db when overriding other flags (or omit it to run without persistence):
+
+    docker run beanstalkd-pi -db /data/jobs.db -log-format json
+
+The binary runs directly as PID 1 and handles SIGTERM itself (section 6),
+so `docker stop` performs the full graceful shutdown, including the
+SQLite adapter's final flush and WAL checkpoint, well within Docker's
+default 10s stop timeout. Drain mode can be toggled with the "drain"
+wire command, or with `docker kill -s USR1`.
+
+The image has no shell or curl, so it defines no Docker HEALTHCHECK;
+point an orchestrator's HTTP probe (e.g. a Kubernetes liveness/readiness
+probe) at GET /healthz on port 11301 (section 7).
+
+Multi-arch images build with buildx; the builder stage runs on each
+target platform (natively or under QEMU), so the zig cross toolchain the
+release workflow uses isn't needed here:
+
+    docker buildx build --platform linux/amd64,linux/arm64 -t beanstalkd-pi .
