@@ -21,11 +21,11 @@ jobs:
   goreleaser:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
@@ -34,11 +34,11 @@ jobs:
       # can produce both linux/amd64 and linux/arm64 (see CC/CXX in
       # .goreleaser.yaml). beanstalkd-bench has no cgo dependency and
       # doesn't need this.
-      - uses: mlugg/setup-zig@v1
+      - uses: mlugg/setup-zig@v2
         with:
-          version: "0.13.0"
+          version: "0.17.0"
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
@@ -50,9 +50,9 @@ jobs:
     needs: goreleaser
     runs-on: macos-14
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
